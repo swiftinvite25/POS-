@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if mode == "edit" else "Add" }} Product — Hardware Shop POS{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-12 col-md-8 col-lg-6">
+        <h1 class="h3 mb-3">{{ "Edit" if mode == "edit" else "Add" }} Product</h1>
+        <div class="card">
+            <div class="card-body">
+                <form method="post">
+                    <div class="mb-3">
+                        <label class="form-label" for="name">Product name</label>
+                        <input class="form-control" id="name" name="name" required
+                               value="{{ product.name if product else '' }}">
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-3">
+                            <label class="form-label" for="sku">SKU (optional)</label>
+                            <input class="form-control" id="sku" name="sku"
+                                   value="{{ product.sku if product else '' }}">
+                        </div>
+                        <div class="col-6 mb-3">
+                            <label class="form-label" for="unit">Unit</label>
+                            <select class="form-select" id="unit" name="unit">
+                                {% for u in units %}
+                                <option value="{{ u }}" {{ "selected" if product and product.unit == u }}>{{ u }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-3">
+                            <label class="form-label" for="buying_price">Buying price (TSh)</label>
+                            <input type="number" step="0.01" min="0" class="form-control" id="buying_price"
+                                   name="buying_price" required
+                                   value="{{ product.buying_price if product else 0 }}">
+                        </div>
+                        <div class="col-6 mb-3">
+                            <label class="form-label" for="selling_price">Selling price (TSh)</label>
+                            <input type="number" step="0.01" min="0" class="form-control" id="selling_price"
+                                   name="selling_price" required
+                                   value="{{ product.selling_price if product else 0 }}">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-3">
+                            <label class="form-label" for="stock_quantity">Current stock</label>
+                            <input type="number" step="0.01" min="0" class="form-control" id="stock_quantity"
+                                   name="stock_quantity" required
+                                   value="{{ product.stock_quantity if product else 0 }}">
+                        </div>
+                        <div class="col-6 mb-3">
+                            <label class="form-label" for="minimum_stock">Minimum stock</label>
+                            <input type="number" step="0.01" min="0" class="form-control" id="minimum_stock"
+                                   name="minimum_stock" required
+                                   value="{{ product.minimum_stock if product else 0 }}">
+                        </div>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-primary" type="submit">Save</button>
+                        <a class="btn btn-outline-secondary" href="{{ url_for('products') }}">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+        {% if mode == "edit" %}
+        <p class="text-muted small mt-2">
+            To adjust stock quantity from a supplier purchase, use
+            <a href="{{ url_for('inventory') }}">Inventory</a> instead — it keeps a purchase record and stock history.
+        </p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

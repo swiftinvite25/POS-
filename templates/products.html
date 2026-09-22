@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Products — Hardware Shop POS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Products</h1>
+    <a href="{{ url_for('product_add') }}" class="btn btn-primary">+ Add Product</a>
+</div>
+
+<form method="get" class="mb-3">
+    <input type="text" name="q" class="form-control" placeholder="Search by name or SKU..."
+           value="{{ query }}" onchange="this.form.submit()">
+</form>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead>
+                <tr>
+                    <th>Name</th><th>SKU</th><th>Unit</th>
+                    <th class="text-end">Buying</th><th class="text-end">Selling</th>
+                    <th class="text-end">Stock</th><th class="text-end">Min</th><th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for p in products %}
+                <tr class="{{ 'table-warning' if p.stock_quantity <= p.minimum_stock else '' }}">
+                    <td>{{ p.name }}</td>
+                    <td class="text-muted">{{ p.sku or "—" }}</td>
+                    <td>{{ p.unit }}</td>
+                    <td class="text-end">{{ "{:,.0f}".format(p.buying_price) }}</td>
+                    <td class="text-end">{{ "{:,.0f}".format(p.selling_price) }}</td>
+                    <td class="text-end">
+                        {{ p.stock_quantity }}
+                        {% if p.stock_quantity <= p.minimum_stock %}
+                            <span class="badge bg-danger ms-1">LOW STOCK</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-end">{{ p.minimum_stock }}</td>
+                    <td class="text-end">
+                        <a href="{{ url_for('product_edit', product_id=p.id) }}" class="btn btn-sm btn-outline-secondary">Edit</a>
+                    </td>
+                </tr>
+            {% else %}
+                <tr><td colspan="8" class="text-center text-muted py-4">No products found.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}POS — Hardware Shop POS{% endblock %}
+{% block content %}
+<div class="row g-3">
+    <div class="col-12 col-lg-7">
+        <div class="card mb-3">
+            <div class="card-body">
+                <label class="form-label" for="product-search">Search product (name or SKU)</label>
+                <input type="text" id="product-search" class="form-control form-control-lg"
+                       placeholder="Start typing..." autocomplete="off" autofocus>
+                <div id="search-results" class="list-group mt-2"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">Recent Sales</div>
+            <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <thead><tr><th>Time</th><th>Cashier</th><th>Payment</th><th class="text-end">Total</th></tr></thead>
+                    <tbody>
+                    {% for s in recent_sales %}
+                        <tr>
+                            <td>{{ s.created_at.strftime("%d %b %H:%M") }}</td>
+                            <td>{{ s.cashier_name }}</td>
+                            <td>{{ s.payment_method }}</td>
+                            <td class="text-end">{{ "{:,.0f}".format(s.total_amount) }}</td>
+                        </tr>
+                    {% else %}
+                        <tr><td colspan="4" class="text-muted">No sales yet.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-12 col-lg-5">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Cart</span>
+                <button class="btn btn-sm btn-outline-danger" id="clear-cart">Clear</button>
+            </div>
+            <div class="table-responsive">
+                <table class="table mb-0" id="cart-table">
+                    <thead>
+                        <tr><th>Product</th><th style="width:110px">Qty</th><th class="text-end">Subtotal</th><th></th></tr>
+                    </thead>
+                    <tbody id="cart-body">
+                        <tr id="cart-empty-row"><td colspan="4" class="text-muted text-center py-3">Cart is empty</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="card-body border-top">
+                <div class="d-flex justify-content-between fs-4 fw-semibold mb-3">
+                    <span>Total</span>
+                    <span id="cart-total">0</span>
+                </div>
+                <label class="form-label" for="payment-method">Payment method</label>
+                <select id="payment-method" class="form-select form-select-lg mb-3">
+                    {% for method in payment_methods %}
+                    <option value="{{ method }}">{{ method }}</option>
+                    {% endfor %}
+                </select>
+                <button class="btn btn-success btn-lg w-100" id="checkout-btn" disabled>Complete Sale</button>
+                <div id="checkout-message" class="mt-2"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const cart = new Map(); // product_id -> {name, unit, selling_price, stock_quantity, quantity}
+
+const searchInput = document.getElementById("product-search");
+const resultsBox = document.getElementById("search-results");
+const cartBody = document.getElementById("cart-body");
+const cartTotalEl = document.getElementById("cart-total");
+const checkoutBtn = document.getElementById("checkout-btn");
+const checkoutMessage = document.getElementById("checkout-message");
+
+function fmt(n) {
+    return Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+let searchTimer = null;
+searchInput.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    const q = searchInput.value.trim();
+    if (q.length === 0) { resultsBox.innerHTML = ""; return; }
+    searchTimer = setTimeout(() => runSearch(q), 200);
+});
+
+async function runSearch(q) {
+    try {
+        const res = await fetch(`/pos/search?q=${encodeURIComponent(q)}`);
+        const products = await res.json();
+        resultsBox.innerHTML = "";
+        if (products.length === 0) {
+            resultsBox.innerHTML = '<div class="list-group-item text-muted">No products found.</div>';
+            return;
+        }
+        products.forEach(p => {
+            const item = document.createElement("button");
+            item.type = "button";
+            item.className = "list-group-item list-group-item-action d-flex justify-content-between";
+            item.innerHTML = `<span>${p.name}${p.sku ? ' <span class="text-muted">(' + p.sku + ')</span>' : ''}</span>
+                               <span>${fmt(p.selling_price)} TSh · ${fmt(p.stock_quantity)} ${p.unit} left</span>`;
+            item.addEventListener("click", () => addToCart(p));
+            resultsBox.appendChild(item);
+        });
+    } catch (err) {
+        resultsBox.innerHTML = '<div class="list-group-item text-danger">Search failed. Try again.</div>';
+    }
+}
+
+function addToCart(p) {
+    const existing = cart.get(p.id);
+    if (existing) {
+        if (existing.quantity < p.stock_quantity) existing.quantity += 1;
+    } else {
+        cart.set(p.id, {
+            name: p.name, unit: p.unit, selling_price: p.selling_price,
+            stock_quantity: p.stock_quantity, quantity: 1
+        });
+    }
+    searchInput.value = "";
+    resultsBox.innerHTML = "";
+    searchInput.focus();
+    renderCart();
+}
+
+function renderCart() {
+    cartBody.innerHTML = "";
+    if (cart.size === 0) {
+        cartBody.innerHTML = '<tr id="cart-empty-row"><td colspan="4" class="text-muted text-center py-3">Cart is empty</td></tr>';
+        checkoutBtn.disabled = true;
+        cartTotalEl.textContent = "0";
+        return;
+    }
+
+    let total = 0;
+    cart.forEach((item, id) => {
+        const subtotal = item.quantity * item.selling_price;
+        total += subtotal;
+        const row = document.createElement("tr");
+        row.innerHTML = `
+            <td>${item.name}<div class="small text-muted">${fmt(item.selling_price)} / ${item.unit}</div></td>
+            <td>
+                <input type="number" min="0.01" step="any" class="form-control form-control-sm qty-input"
+                       value="${item.quantity}" max="${item.stock_quantity}" data-id="${id}">
+            </td>
+            <td class="text-end">${fmt(subtotal)}</td>
+            <td><button class="btn btn-sm btn-outline-danger remove-btn" data-id="${id}">✕</button></td>
+        `;
+        cartBody.appendChild(row);
+    });
+
+    cartTotalEl.textContent = fmt(total);
+    checkoutBtn.disabled = false;
+
+    cartBody.querySelectorAll(".qty-input").forEach(input => {
+        input.addEventListener("change", (e) => {
+            const id = e.target.dataset.id;
+            let val = parseFloat(e.target.value);
+            const item = cart.get(id);
+            if (isNaN(val) || val <= 0) { cart.delete(id); }
+            else { item.quantity = Math.min(val, item.stock_quantity); }
+            renderCart();
+        });
+    });
+
+    cartBody.querySelectorAll(".remove-btn").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+            cart.delete(e.target.dataset.id);
+            renderCart();
+        });
+    });
+}
+
+document.getElementById("clear-cart").addEventListener("click", () => {
+    cart.clear();
+    renderCart();
+});
+
+checkoutBtn.addEventListener("click", async () => {
+    checkoutBtn.disabled = true;
+    checkoutMessage.innerHTML = "";
+    const items = Array.from(cart.entries()).map(([id, item]) => ({
+        product_id: id, quantity: item.quantity
+    }));
+    const payment_method = document.getElementById("payment-method").value;
+
+    try {
+        const res = await fetch("/pos/checkout", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ items, payment_method })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            checkoutMessage.innerHTML = `<div class="alert alert-danger py-2 mb-0">${data.error || "Checkout failed."}</div>`;
+            checkoutBtn.disabled = false;
+            return;
+        }
+        checkoutMessage.innerHTML = `<div class="alert alert-success py-2 mb-0">Sale completed: ${fmt(data.total_amount)} TSh</div>`;
+        cart.clear();
+        renderCart();
+        setTimeout(() => window.location.reload(), 1200);
+    } catch (err) {
+        checkoutMessage.innerHTML = '<div class="alert alert-danger py-2 mb-0">Network error. Try again.</div>';
+        checkoutBtn.disabled = false;
+    }
+});
+</script>
+{% endblock %}

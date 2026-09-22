@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Activity — Hardware Shop POS{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Activity Log</h1>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-sm mb-0">
+            <thead>
+                <tr><th>Date/Time</th><th>User</th><th>Action</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+            {% for log in logs %}
+                <tr>
+                    <td class="text-nowrap">{{ log.created_at.strftime("%d %b %Y %H:%M") }}</td>
+                    <td>{{ log.user_name or "System" }}</td>
+                    <td><span class="badge bg-secondary">{{ log.action }}</span></td>
+                    <td>{{ log.description or "—" }}</td>
+                </tr>
+            {% else %}
+                <tr><td colspan="4" class="text-center text-muted py-4">No activity recorded yet.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+<p class="text-muted small mt-2">Showing the most recent 200 entries.</p>
+{% endblock %}

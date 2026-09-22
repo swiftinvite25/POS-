@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Users — Hardware Shop POS{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Users</h1>
+
+<div class="row g-3">
+    <div class="col-12 col-lg-4">
+        <div class="card">
+            <div class="card-header">Add Cashier</div>
+            <div class="card-body">
+                <form method="post">
+                    <div class="mb-3">
+                        <label class="form-label" for="name">Full name</label>
+                        <input class="form-control" id="name" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="email">Email</label>
+                        <input type="email" class="form-control" id="email" name="email" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="password">Password</label>
+                        <input type="password" class="form-control" id="password" name="password"
+                               minlength="6" required>
+                        <div class="form-text">At least 6 characters.</div>
+                    </div>
+                    <button class="btn btn-primary w-100" type="submit">Add Cashier</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-12 col-lg-8">
+        <div class="card">
+            <div class="card-header">All Users</div>
+            <div class="table-responsive">
+                <table class="table table-sm mb-0 align-middle">
+                    <thead>
+                        <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                    {% for u in users %}
+                        <tr>
+                            <td>{{ u.name }}</td>
+                            <td class="text-muted">{{ u.email }}</td>
+                            <td><span class="badge bg-secondary">{{ u.role }}</span></td>
+                            <td>
+                                {% if u.is_active %}
+                                    <span class="badge bg-success">Active</span>
+                                {% else %}
+                                    <span class="badge bg-danger">Deactivated</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-end">
+                                {% if u.role != 'owner' %}
+                                <form method="post" action="{{ url_for('user_toggle', user_id=u.id) }}">
+                                    <button class="btn btn-sm btn-outline-secondary" type="submit">
+                                        {{ "Deactivate" if u.is_active else "Activate" }}
+                                    </button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
