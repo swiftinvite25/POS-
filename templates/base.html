@@ -35,8 +35,37 @@
             </ul>
             <span class="navbar-text text-light me-3">
                 {{ current_user.name }} <span class="badge bg-secondary">{{ current_user.role }}</span>
+                <span class="text-white-50">· {{ current_user.shop_name }}</span>
+                {% if user_shops|length > 1 %}
+                <a href="{{ url_for('select_shop', switch=1) }}" class="link-light small ms-1">(switch shop)</a>
+                {% endif %}
             </span>
             <a class="btn btn-outline-light btn-sm" href="{{ url_for('logout') }}">Logout</a>
+        </div>
+    </div>
+</nav>
+{% if subscription and subscription.status == 'grace' %}
+<div class="alert alert-warning mb-0 rounded-0 text-center py-2">
+    ⚠️ Your subscription expired on {{ subscription.period_end.strftime("%d %b %Y") }}.
+    You have <strong>{{ subscription.days_left }} day{{ 's' if subscription.days_left != 1 else '' }}</strong>
+    left in your grace period before the system locks.
+    {% if current_user.role == 'owner' %}Please arrange payment to avoid interruption.{% endif %}
+</div>
+{% endif %}
+{% elif current_admin %}
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary sticky-top">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="{{ url_for('admin_dashboard') }}">🧰 Platform Admin</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="nav">
+            <ul class="navbar-nav me-auto">
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Shops</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('admin_shop_new') }}">+ New Shop</a></li>
+            </ul>
+            <span class="navbar-text text-light me-3">{{ current_admin.name }}</span>
+            <a class="btn btn-outline-light btn-sm" href="{{ url_for('admin_logout') }}">Logout</a>
         </div>
     </div>
 </nav>

@@ -27,23 +27,81 @@ create table if not exists shops (
     created_at  timestamptz not null default now()
 );
 
+-- Billing fields live directly on shops: one active subscription
+-- period per shop is all this business needs (no multi-plan
+-- history required on the shop row itself — that's what the
+-- separate `payments` table below is for).
+alter table shops
+    add column if not exists plan_type text not null default 'monthly'
+        check (plan_type in ('monthly', 'annual'));
+alter table shops
+    add column if not exists subscription_period_end date not null
+        default (current_date + interval '30 days')::date;
+
 -- ------------------------------------------------------------
--- profiles (application users: owners and cashiers)
--- Named "profiles" rather than "users" to avoid clashing with
--- Postgres/Supabase's own reserved "auth.users" namespace.
+-- platform_admins (you — not scoped to any shop, manages billing
+-- and onboards new client shops via the /admin panel)
 -- ------------------------------------------------------------
-create table if not exists profiles (
+create table if not exists platform_admins (
     id             uuid primary key default gen_random_uuid(),
-    shop_id        uuid not null references shops(id) on delete cascade,
     name           text not null,
     email          text not null unique,
     password_hash  text not null,
-    role           text not null check (role in ('owner', 'cashier')),
-    is_active      boolean not null default true,
     created_at     timestamptz not null default now()
 );
 
-create index if not exists idx_profiles_shop_id on profiles(shop_id);
+-- ------------------------------------------------------------
+-- payments (billing history — each row is one payment recorded
+-- by a platform admin; recording a payment also pushes the
+-- shop's subscription_period_end forward, done in the app)
+-- ------------------------------------------------------------
+create table if not exists payments (
+    id            uuid primary key default gen_random_uuid(),
+    shop_id       uuid not null references shops(id) on delete cascade,
+    plan_type     text not null check (plan_type in ('monthly', 'annual')),
+    amount        numeric(12, 2) not null check (amount >= 0),
+    period_start  date not null,
+    period_end    date not null,
+    reference     text,
+    recorded_by   uuid references platform_admins(id),
+    created_at    timestamptz not null default now()
+);
+
+create index if not exists idx_payments_shop_id on payments(shop_id);
+
+-- ------------------------------------------------------------
+-- users (application logins — owners and cashiers)
+-- A user is a GLOBAL identity, not scoped to one shop: which
+-- shop(s) they can access, and their role on each, lives in
+-- shop_members below. This is what lets one login (e.g. the same
+-- person's email) own or work at more than one client shop.
+-- Named "users" — Supabase's own auth schema is "auth.users",
+-- a different namespace, so this doesn't clash with it.
+-- ------------------------------------------------------------
+create table if not exists users (
+    id             uuid primary key default gen_random_uuid(),
+    name           text not null,
+    email          text not null unique,
+    password_hash  text not null,
+    created_at     timestamptz not null default now()
+);
+
+-- ------------------------------------------------------------
+-- shop_members (which shops a user belongs to, and their role
+-- on each — one row per user per shop)
+-- ------------------------------------------------------------
+create table if not exists shop_members (
+    id          uuid primary key default gen_random_uuid(),
+    shop_id     uuid not null references shops(id) on delete cascade,
+    user_id     uuid not null references users(id) on delete cascade,
+    role        text not null check (role in ('owner', 'cashier')),
+    is_active   boolean not null default true,
+    created_at  timestamptz not null default now(),
+    unique (shop_id, user_id)
+);
+
+create index if not exists idx_shop_members_shop_id on shop_members(shop_id);
+create index if not exists idx_shop_members_user_id on shop_members(user_id);
 
 -- ------------------------------------------------------------
 -- products
@@ -86,7 +144,7 @@ create trigger trg_products_updated_at
 create table if not exists sales (
     id              uuid primary key default gen_random_uuid(),
     shop_id         uuid not null references shops(id) on delete cascade,
-    cashier_id      uuid not null references profiles(id),
+    cashier_id      uuid not null references users(id),
     total_amount    numeric(12, 2) not null check (total_amount >= 0),
     payment_method  text not null check (
         payment_method in ('Cash', 'M-Pesa', 'Mixx by Yas', 'Airtel Money', 'Bank')
@@ -119,7 +177,7 @@ create index if not exists idx_sale_items_product_id on sale_items(product_id);
 create table if not exists purchases (
     id              uuid primary key default gen_random_uuid(),
     shop_id         uuid not null references shops(id) on delete cascade,
-    user_id         uuid not null references profiles(id),
+    user_id         uuid not null references users(id),
     supplier_name   text,
     total_amount    numeric(12, 2) not null check (total_amount >= 0),
     created_at      timestamptz not null default now()
@@ -148,7 +206,7 @@ create index if not exists idx_purchase_items_product_id on purchase_items(produ
 create table if not exists expenses (
     id           uuid primary key default gen_random_uuid(),
     shop_id      uuid not null references shops(id) on delete cascade,
-    user_id      uuid not null references profiles(id),
+    user_id      uuid not null references users(id),
     description  text not null,
     category     text not null default 'Other',
     amount       numeric(12, 2) not null check (amount >= 0),
@@ -165,7 +223,7 @@ create table if not exists stock_movements (
     id             uuid primary key default gen_random_uuid(),
     shop_id        uuid not null references shops(id) on delete cascade,
     product_id     uuid not null references products(id),
-    user_id        uuid not null references profiles(id),
+    user_id        uuid not null references users(id),
     movement_type  text not null check (movement_type in ('PURCHASE', 'SALE', 'ADJUSTMENT')),
     quantity       numeric(12, 2) not null,
     reference_id   uuid,
@@ -181,7 +239,7 @@ create index if not exists idx_stock_movements_product_id on stock_movements(pro
 create table if not exists activity_logs (
     id           uuid primary key default gen_random_uuid(),
     shop_id      uuid not null references shops(id) on delete cascade,
-    user_id      uuid references profiles(id),
+    user_id      uuid references users(id),
     action       text not null,
     description  text,
     created_at   timestamptz not null default now()
@@ -194,8 +252,9 @@ create index if not exists idx_activity_logs_created_at on activity_logs(created
 -- Demo seed data
 -- ============================================================
 -- Login credentials for the seeded accounts:
---   Owner:   owner@demo.co.tz   / owner123
---   Cashier: cashier@demo.co.tz / cashier123
+--   Owner:   owner@demo.co.tz   / owner123   (owns TWO demo shops — try the
+--            shop switcher after logging in, or /select-shop)
+--   Cashier: cashier@demo.co.tz / cashier123  (Demo Hardware Shop only)
 -- (Change these immediately in any real deployment — the /users
 -- page lets the owner add real cashier accounts and deactivate
 -- this demo one.)
@@ -206,6 +265,7 @@ create index if not exists idx_activity_logs_created_at on activity_logs(created
 do $$
 declare
     v_shop_id       uuid;
+    v_shop2_id      uuid;
     v_owner_id      uuid;
     v_cashier_id    uuid;
     v_cement_id     uuid;
@@ -221,17 +281,24 @@ begin
     insert into shops (name) values ('Demo Hardware Shop')
         returning id into v_shop_id;
 
-    insert into profiles (shop_id, name, email, password_hash, role)
-        values (v_shop_id, 'Shop Owner', 'owner@demo.co.tz',
-                'scrypt:32768:8:1$ClawuYqSxBjx2GBN$78dc9429682508f8ef917f7b0e4b1ac628ae097c5784eac9224008e8efb77b24ab6d8609fdcf8ad008d4ceb7b0c87f3ed1023b8cf9bee6f1f308ef9425710c20',
-                'owner')
+    insert into shops (name) values ('Demo Hardware Shop — Branch 2')
+        returning id into v_shop2_id;
+
+    insert into users (name, email, password_hash)
+        values ('Shop Owner', 'owner@demo.co.tz',
+                'scrypt:32768:8:1$ClawuYqSxBjx2GBN$78dc9429682508f8ef917f7b0e4b1ac628ae097c5784eac9224008e8efb77b24ab6d8609fdcf8ad008d4ceb7b0c87f3ed1023b8cf9bee6f1f308ef9425710c20')
         returning id into v_owner_id;
 
-    insert into profiles (shop_id, name, email, password_hash, role)
-        values (v_shop_id, 'Demo Cashier', 'cashier@demo.co.tz',
-                'scrypt:32768:8:1$0kYyxQNS4qkLmBkD$118bb432983246a0ad0bed7278144819d4ce5e216c65d9088ffb9c8457c1bf21f303259fa6329becedd39130f315914f465524e7766aa8a51f6181ae021ce283',
-                'cashier')
+    insert into users (name, email, password_hash)
+        values ('Demo Cashier', 'cashier@demo.co.tz',
+                'scrypt:32768:8:1$0kYyxQNS4qkLmBkD$118bb432983246a0ad0bed7278144819d4ce5e216c65d9088ffb9c8457c1bf21f303259fa6329becedd39130f315914f465524e7766aa8a51f6181ae021ce283')
         returning id into v_cashier_id;
+
+    -- Same owner login, two shops — this is the multi-shop feature:
+    -- one email/password, a shop picker on login.
+    insert into shop_members (shop_id, user_id, role) values (v_shop_id, v_owner_id, 'owner');
+    insert into shop_members (shop_id, user_id, role) values (v_shop2_id, v_owner_id, 'owner');
+    insert into shop_members (shop_id, user_id, role) values (v_shop_id, v_cashier_id, 'cashier');
 
     insert into products (shop_id, name, sku, unit, buying_price, selling_price, stock_quantity, minimum_stock)
         values
@@ -242,6 +309,13 @@ begin
             (v_shop_id, 'Paint 20L',      'PNT-20L', 'Piece', 65000, 78000, 25,  5),
             (v_shop_id, 'Binding Wire',   'BW-ROLL', 'Kg',    4000,  5200,  40,  10),
             (v_shop_id, 'Building Blocks','BLK-STD', 'Piece', 800,   1200,  500, 100);
+
+    -- Branch 2 gets its own small, separate product catalog — proof
+    -- that the two shops' data never mixes even under one login.
+    insert into products (shop_id, name, sku, unit, buying_price, selling_price, stock_quantity, minimum_stock)
+        values
+            (v_shop2_id, 'Cement 50kg', 'CEM-50', 'Bag', 18500, 21500, 40, 10),
+            (v_shop2_id, 'Nails 1kg',   'NAIL-1K','Kg',  3600,  4600,  60, 15);
 
     select id into v_cement_id from products where shop_id = v_shop_id and sku = 'CEM-50';
     select id into v_nails_id  from products where shop_id = v_shop_id and sku = 'NAIL-1K';
@@ -281,4 +355,26 @@ begin
         values (v_shop_id, v_owner_id, 'SEED_DATA', 'Demo data created');
 
     raise notice 'Demo data seeded. Login as owner@demo.co.tz / owner123 or cashier@demo.co.tz / cashier123';
+end $$;
+
+-- ============================================================
+-- Platform admin seed (you — the superadmin who onboards clients)
+-- ============================================================
+-- Login: admin@hardwarepos.co.tz / changeme123
+-- CHANGE THIS PASSWORD immediately after your first login — there
+-- is currently no in-app way to change it, so update password_hash
+-- directly in Supabase using werkzeug.security.generate_password_hash.
+
+do $$
+begin
+    if exists (select 1 from platform_admins where email = 'admin@hardwarepos.co.tz') then
+        raise notice 'Platform admin already present — skipping seed.';
+        return;
+    end if;
+
+    insert into platform_admins (name, email, password_hash)
+        values ('Platform Admin', 'admin@hardwarepos.co.tz',
+                'scrypt:32768:8:1$2pOuS0KKUAvSQIMO$6647784e4cbc34e0bf3e068bf77fc5d839fc87e9d0e561c6dfaf53f10c4f3642b0445362aa043c0df1028ec909558a668b01f0c8be801037a6c832ed4d07746a');
+
+    raise notice 'Platform admin seeded: admin@hardwarepos.co.tz / changeme123 — change this password.';
 end $$;

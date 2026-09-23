@@ -61,6 +61,13 @@ PAYMENT_METHODS = ["Cash", "M-Pesa", "Mixx by Yas", "Airtel Money", "Bank"]
 PRODUCT_UNITS = ["Piece", "Bag", "Box", "Meter", "Kg", "Litre"]
 EXPENSE_CATEGORIES = ["Transport", "Electricity", "Rent", "Salary", "Other"]
 
+# ------------------------------------------------------------------
+# Subscription billing (TZS)
+# ------------------------------------------------------------------
+PLAN_PRICES = {"monthly": 50_000, "annual": 500_000}  # annual = ~2 months free
+PLAN_LENGTH_DAYS = {"monthly": 30, "annual": 365}
+GRACE_PERIOD_DAYS = 7
+
 
 # ------------------------------------------------------------------
 # Database connection handling
@@ -95,37 +102,135 @@ def close_db(exception=None):
 # ------------------------------------------------------------------
 @app.before_request
 def load_logged_in_user():
-    """Populate g.user from the session on every request.
+    """Populate g.user (current shop context) and g.user_shops (every
+    active shop this login can access) from the session.
 
-    Re-reading from the database (rather than trusting the session
-    alone) means a deactivated cashier is locked out on their very
-    next request, not just their next login.
+    A login (users row) is a global identity — it can belong to more
+    than one shop via shop_members. session["shop_id"] holds which
+    shop is "active" for this browser session; g.user is None until
+    that's set to a shop the user actually has active access to, even
+    if they're otherwise authenticated (session["user_id"] present).
+    Re-reading from the database every request (rather than trusting
+    role/is_active from the session) means a deactivated membership
+    or password change takes effect on the very next request.
     """
+    g.user = None
+    g.user_shops = []
+
     user_id = session.get("user_id")
     if user_id is None:
-        g.user = None
+        return
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT id, name, email FROM users WHERE id = %s", (user_id,))
+        base_user = cur.fetchone()
+
+    if base_user is None:
+        session.clear()
+        return
+
+    with db.cursor() as cur:
+        cur.execute(
+            """SELECT sm.shop_id, sm.role, s.name AS shop_name
+               FROM shop_members sm JOIN shops s ON s.id = sm.shop_id
+               WHERE sm.user_id = %s AND sm.is_active = true
+               ORDER BY s.name ASC""",
+            (user_id,),
+        )
+        g.user_shops = cur.fetchall()
+
+    shop_id = session.get("shop_id")
+    match = next((m for m in g.user_shops if str(m["shop_id"]) == str(shop_id)), None) if shop_id else None
+
+    if match is not None:
+        g.user = {
+            "id": base_user["id"],
+            "name": base_user["name"],
+            "email": base_user["email"],
+            "shop_id": match["shop_id"],
+            "shop_name": match["shop_name"],
+            "role": match["role"],
+        }
+
+
+@app.before_request
+def load_logged_in_admin():
+    """Populate g.admin from the session for the separate /admin panel.
+
+    Platform admins are a distinct login (no shop_id, no role) —
+    kept in their own session key so an admin session and a shop
+    user session can never be confused with each other.
+    """
+    admin_id = session.get("admin_id")
+    g.admin = None
+    if admin_id is not None:
+        g.admin = {"id": admin_id, "name": session.get("admin_name")}
+
+
+def get_subscription_status(shop):
+    """Work out a shop's billing status from its subscription_period_end.
+
+    No cron job needed — status is derived on the fly from today's
+    date vs. the stored period end (+ a 7-day grace window), so it's
+    always correct the instant a payment is recorded or a deadline
+    passes.
+    """
+    today = date.today()
+    period_end = shop["subscription_period_end"]
+    grace_end = period_end + timedelta(days=GRACE_PERIOD_DAYS)
+
+    if today <= period_end:
+        return {"status": "active", "period_end": period_end, "grace_end": grace_end,
+                "days_left": (period_end - today).days}
+    if today <= grace_end:
+        return {"status": "grace", "period_end": period_end, "grace_end": grace_end,
+                "days_left": (grace_end - today).days}
+    return {"status": "locked", "period_end": period_end, "grace_end": grace_end,
+            "days_left": 0}
+
+
+# Endpoints reachable even when a shop is locked or a user isn't
+# logged in — the lock page itself, logout, and the two login pages.
+SUBSCRIPTION_EXEMPT_ENDPOINTS = {"logout", "subscription_locked", "login", "select_shop", "static"}
+
+
+@app.before_request
+def enforce_subscription():
+    """Redirect to the lock page once a shop's grace period has passed.
+
+    Runs after load_logged_in_user, so g.user is already set. Admin
+    routes (endpoint starts with "admin_") are never subject to this —
+    the platform admin must always be able to reach the panel to fix
+    a shop's billing, even for a shop that's currently locked.
+    """
+    if g.user is None:
+        return
+    if request.endpoint in SUBSCRIPTION_EXEMPT_ENDPOINTS:
+        return
+    if request.endpoint and request.endpoint.startswith("admin_"):
         return
 
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
-            """SELECT id, shop_id, name, email, role, is_active
-               FROM profiles WHERE id = %s""",
-            (user_id,),
+            "SELECT plan_type, subscription_period_end FROM shops WHERE id = %s",
+            (g.user["shop_id"],),
         )
-        user = cur.fetchone()
+        shop = cur.fetchone()
 
-    if user is None or not user["is_active"]:
-        session.clear()
-        g.user = None
-    else:
-        g.user = user
+    status = get_subscription_status(shop)
+    g.subscription = status
+    if status["status"] == "locked":
+        return redirect(url_for("subscription_locked"))
 
 
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
         if g.user is None:
+            if session.get("user_id") and g.user_shops:
+                return redirect(url_for("select_shop", next=request.path))
             return redirect(url_for("login", next=request.path))
         return view(*args, **kwargs)
 
@@ -136,6 +241,8 @@ def owner_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
         if g.user is None:
+            if session.get("user_id") and g.user_shops:
+                return redirect(url_for("select_shop", next=request.path))
             return redirect(url_for("login", next=request.path))
         if g.user["role"] != "owner":
             abort(403)
@@ -144,14 +251,31 @@ def owner_required(view):
     return wrapped
 
 
-def log_activity(action, description=""):
-    """Record an entry in activity_logs for the current user's shop."""
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if g.admin is None:
+            return redirect(url_for("admin_login", next=request.path))
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def log_activity(action, description="", shop_id=None, user_id=None):
+    """Record an entry in activity_logs.
+
+    Defaults to the current shop/user context (g.user); pass explicit
+    shop_id/user_id for the rare case of logging before g.user exists
+    yet in this request (e.g. right after picking a shop at login).
+    """
+    shop_id = shop_id if shop_id is not None else g.user["shop_id"]
+    user_id = user_id if user_id is not None else g.user["id"]
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
             """INSERT INTO activity_logs (shop_id, user_id, action, description)
                VALUES (%s, %s, %s, %s)""",
-            (g.user["shop_id"], g.user["id"], action, description),
+            (shop_id, user_id, action, description),
         )
 
 
@@ -165,7 +289,14 @@ def parse_decimal(value, default="0"):
 
 @app.context_processor
 def inject_globals():
-    return {"current_user": g.get("user"), "payment_methods": PAYMENT_METHODS}
+    return {
+        "current_user": g.get("user"),
+        "user_shops": g.get("user_shops", []),
+        "current_admin": g.get("admin"),
+        "subscription": g.get("subscription"),
+        "payment_methods": PAYMENT_METHODS,
+        "plan_prices": PLAN_PRICES,
+    }
 
 
 # ------------------------------------------------------------------
@@ -173,11 +304,15 @@ def inject_globals():
 # ------------------------------------------------------------------
 @app.route("/")
 def index():
-    if g.user is None:
-        return redirect(url_for("login"))
-    if g.user["role"] == "owner":
-        return redirect(url_for("dashboard"))
-    return redirect(url_for("pos"))
+    if g.user is not None:
+        if g.user["role"] == "owner":
+            return redirect(url_for("dashboard"))
+        return redirect(url_for("pos"))
+    if session.get("user_id") and g.user_shops:
+        return redirect(url_for("select_shop"))
+    if g.admin is not None:
+        return redirect(url_for("admin_dashboard"))
+    return redirect(url_for("login"))
 
 
 # ------------------------------------------------------------------
@@ -195,25 +330,80 @@ def login():
         db = get_db()
         with db.cursor() as cur:
             cur.execute(
-                """SELECT id, shop_id, name, password_hash, role, is_active
-                   FROM profiles WHERE email = %s""",
+                "SELECT id, name, password_hash FROM users WHERE email = %s",
                 (email,),
             )
             user = cur.fetchone()
 
         if user is None or not check_password_hash(user["password_hash"], password):
             flash("Incorrect email or password.", "danger")
-        elif not user["is_active"]:
-            flash("This account has been deactivated. Contact the shop owner.", "danger")
         else:
-            session.clear()
-            session["user_id"] = str(user["id"])
-            g.user = user
-            log_activity("LOGIN", f"{user['name']} logged in")
+            with db.cursor() as cur:
+                cur.execute(
+                    """SELECT sm.shop_id, sm.role, s.name AS shop_name
+                       FROM shop_members sm JOIN shops s ON s.id = sm.shop_id
+                       WHERE sm.user_id = %s AND sm.is_active = true
+                       ORDER BY s.name ASC""",
+                    (user["id"],),
+                )
+                memberships = cur.fetchall()
+
+            if not memberships:
+                flash("This account has no active shop access. Contact your administrator.", "danger")
+            else:
+                session.clear()
+                session["user_id"] = str(user["id"])
+                next_url = request.args.get("next")
+
+                if len(memberships) == 1:
+                    # Only one shop — skip the picker and log straight in,
+                    # same one-step experience as before multi-shop support.
+                    session["shop_id"] = str(memberships[0]["shop_id"])
+                    log_activity(
+                        "LOGIN", f"{user['name']} logged in",
+                        shop_id=memberships[0]["shop_id"], user_id=user["id"],
+                    )
+                    return redirect(next_url or url_for("index"))
+
+                return redirect(url_for("select_shop", next=next_url) if next_url else url_for("select_shop"))
+
+    return render_template("login.html")
+
+
+@app.route("/select-shop", methods=["GET", "POST"])
+def select_shop():
+    """Let a login that belongs to more than one shop pick which one
+    is active for this browser session.
+
+    Also doubles as the "switch shop" page — reached via ?switch=1
+    from the nav even when a shop is already selected.
+    """
+    if session.get("user_id") is None:
+        return redirect(url_for("login"))
+    if g.user is not None and not request.args.get("switch"):
+        return redirect(url_for("index"))
+
+    shops = g.user_shops
+    if not shops:
+        flash("You don't have access to any shop. Contact your administrator.", "danger")
+        session.clear()
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        shop_id = request.form.get("shop_id")
+        match = next((s for s in shops if str(s["shop_id"]) == shop_id), None)
+        if match is None:
+            flash("Invalid selection.", "danger")
+        else:
+            session["shop_id"] = shop_id
+            log_activity(
+                "LOGIN", f"Switched to {match['shop_name']}",
+                shop_id=shop_id, user_id=session["user_id"],
+            )
             next_url = request.args.get("next")
             return redirect(next_url or url_for("index"))
 
-    return render_template("login.html")
+    return render_template("select_shop.html", shops=shops)
 
 
 @app.route("/logout")
@@ -223,6 +413,39 @@ def logout():
     session.clear()
     flash("You have been logged out.", "info")
     return redirect(url_for("login"))
+
+
+@app.route("/subscription-locked")
+def subscription_locked():
+    """Shown instead of every page once a shop's grace period has passed.
+
+    Reachable while logged in even when enforce_subscription would
+    otherwise redirect here — it's in SUBSCRIPTION_EXEMPT_ENDPOINTS —
+    so a locked shop's owner can still see what's owed and log out.
+    """
+    if g.user is None:
+        return redirect(url_for("login"))
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT name, plan_type, subscription_period_end FROM shops WHERE id = %s",
+            (g.user["shop_id"],),
+        )
+        shop = cur.fetchone()
+
+    status = get_subscription_status(shop)
+    if status["status"] != "locked":
+        return redirect(url_for("index"))
+
+    return render_template(
+        "locked.html",
+        shop_name=shop["name"],
+        plan_type=shop["plan_type"],
+        amount_due=PLAN_PRICES[shop["plan_type"]],
+        period_end=status["period_end"],
+        grace_end=status["grace_end"],
+    )
 
 
 # ------------------------------------------------------------------
@@ -283,7 +506,7 @@ def dashboard():
         # Recent activity
         cur.execute(
             """SELECT s.id, s.total_amount, s.payment_method, s.created_at, p.name AS cashier_name
-               FROM sales s JOIN profiles p ON p.id = s.cashier_id
+               FROM sales s JOIN users p ON p.id = s.cashier_id
                WHERE s.shop_id = %s ORDER BY s.created_at DESC LIMIT 6""",
             (shop_id,),
         )
@@ -332,14 +555,14 @@ def pos():
         if g.user["role"] == "owner":
             cur.execute(
                 """SELECT s.id, s.total_amount, s.payment_method, s.created_at, p.name AS cashier_name
-                   FROM sales s JOIN profiles p ON p.id = s.cashier_id
+                   FROM sales s JOIN users p ON p.id = s.cashier_id
                    WHERE s.shop_id = %s ORDER BY s.created_at DESC LIMIT 20""",
                 (shop_id,),
             )
         else:
             cur.execute(
                 """SELECT s.id, s.total_amount, s.payment_method, s.created_at, p.name AS cashier_name
-                   FROM sales s JOIN profiles p ON p.id = s.cashier_id
+                   FROM sales s JOIN users p ON p.id = s.cashier_id
                    WHERE s.shop_id = %s AND s.cashier_id = %s
                    ORDER BY s.created_at DESC LIMIT 20""",
                 (shop_id, g.user["id"]),
@@ -761,7 +984,7 @@ def reports():
                WHERE s.shop_id = %s AND s.created_at::date >= %s""",
             (shop_id, start),
         )
-        gross_profit = float(cur.fetchone()["gross_profit"])
+        gross_profit = cur.fetchone()["gross_profit"]
 
         cur.execute(
             """SELECT category, COALESCE(SUM(amount), 0) AS total FROM expenses
@@ -794,7 +1017,10 @@ def reports():
 
 
 # ------------------------------------------------------------------
-# Users (owner only)
+# Users (owner only) — manages this shop's membership. A person's
+# login (users table) is global, so adding a cashier by an email
+# that already exists elsewhere links that same login to this shop
+# instead of creating a second account for them.
 # ------------------------------------------------------------------
 @app.route("/users", methods=["GET", "POST"])
 @owner_required
@@ -807,27 +1033,63 @@ def users():
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
 
-        if not name or not email or len(password) < 6:
-            flash("Name, email, and a password of at least 6 characters are required.", "danger")
-        else:
-            with db.cursor() as cur:
-                cur.execute("SELECT id FROM profiles WHERE email = %s", (email,))
-                if cur.fetchone() is not None:
-                    flash("A user with that email already exists.", "danger")
+        if not email:
+            flash("Email is required.", "danger")
+            return redirect(url_for("users"))
+
+        with db.cursor() as cur:
+            cur.execute("SELECT id, name FROM users WHERE email = %s", (email,))
+            existing = cur.fetchone()
+
+            if existing is not None:
+                cur.execute(
+                    "SELECT is_active FROM shop_members WHERE shop_id = %s AND user_id = %s",
+                    (shop_id, existing["id"]),
+                )
+                membership = cur.fetchone()
+
+                if membership is not None and membership["is_active"]:
+                    flash(f"{existing['name']} is already an active member of this shop.", "danger")
+                elif membership is not None:
+                    cur.execute(
+                        """UPDATE shop_members SET is_active = true, role = 'cashier'
+                           WHERE shop_id = %s AND user_id = %s""",
+                        (shop_id, existing["id"]),
+                    )
+                    log_activity("USER_ACTIVATED", f"Re-activated '{existing['name']}' on this shop")
+                    flash(f"{existing['name']}'s existing account was re-activated as a cashier here.", "success")
                 else:
                     cur.execute(
-                        """INSERT INTO profiles (shop_id, name, email, password_hash, role)
-                           VALUES (%s, %s, %s, %s, 'cashier')""",
-                        (shop_id, name, email, generate_password_hash(password)),
+                        "INSERT INTO shop_members (shop_id, user_id, role) VALUES (%s, %s, 'cashier')",
+                        (shop_id, existing["id"]),
                     )
-                    log_activity("USER_CREATED", f"Added cashier '{name}' ({email})")
-                    flash(f"Cashier '{name}' added.", "success")
-                    return redirect(url_for("users"))
+                    log_activity("USER_CREATED", f"Linked existing account '{existing['name']}' as cashier")
+                    flash(f"Linked {existing['name']}'s existing login as a cashier on this shop.", "success")
+                return redirect(url_for("users"))
+
+            if not name or len(password) < 6:
+                flash("For a new account, name and a password of at least 6 characters "
+                      "are required. To reuse an existing login instead, enter that "
+                      "person's existing email and leave the password blank.", "danger")
+            else:
+                cur.execute(
+                    "INSERT INTO users (name, email, password_hash) VALUES (%s, %s, %s) RETURNING id",
+                    (name, email, generate_password_hash(password)),
+                )
+                new_user = cur.fetchone()
+                cur.execute(
+                    "INSERT INTO shop_members (shop_id, user_id, role) VALUES (%s, %s, 'cashier')",
+                    (shop_id, new_user["id"]),
+                )
+                log_activity("USER_CREATED", f"Added cashier '{name}' ({email})")
+                flash(f"Cashier '{name}' added.", "success")
+                return redirect(url_for("users"))
 
     with db.cursor() as cur:
         cur.execute(
-            """SELECT id, name, email, role, is_active, created_at FROM profiles
-               WHERE shop_id = %s ORDER BY created_at ASC""",
+            """SELECT u.id, u.name, u.email, sm.role, sm.is_active, sm.created_at
+               FROM shop_members sm JOIN users u ON u.id = sm.user_id
+               WHERE sm.shop_id = %s ORDER BY sm.created_at ASC""",
             (shop_id,),
         )
         user_list = cur.fetchall()
@@ -838,6 +1100,9 @@ def users():
 @app.route("/users/<user_id>/toggle", methods=["POST"])
 @owner_required
 def user_toggle(user_id):
+    """Toggle this person's membership on THIS shop only — deactivating
+    them here has no effect on any other shop the same login belongs to.
+    """
     db = get_db()
     shop_id = g.user["shop_id"]
 
@@ -847,8 +1112,10 @@ def user_toggle(user_id):
 
     with db.cursor() as cur:
         cur.execute(
-            "SELECT id, name, role, is_active FROM profiles WHERE id = %s AND shop_id = %s",
-            (user_id, shop_id),
+            """SELECT sm.role, sm.is_active, u.name FROM shop_members sm
+               JOIN users u ON u.id = sm.user_id
+               WHERE sm.shop_id = %s AND sm.user_id = %s""",
+            (shop_id, user_id),
         )
         target = cur.fetchone()
         if target is None:
@@ -858,11 +1125,14 @@ def user_toggle(user_id):
             return redirect(url_for("users"))
 
         new_status = not target["is_active"]
-        cur.execute("UPDATE profiles SET is_active = %s WHERE id = %s", (new_status, user_id))
+        cur.execute(
+            "UPDATE shop_members SET is_active = %s WHERE shop_id = %s AND user_id = %s",
+            (new_status, shop_id, user_id),
+        )
 
     action = "USER_ACTIVATED" if new_status else "USER_DEACTIVATED"
-    log_activity(action, f"{'Activated' if new_status else 'Deactivated'} '{target['name']}'")
-    flash(f"{target['name']} {'activated' if new_status else 'deactivated'}.", "success")
+    log_activity(action, f"{'Activated' if new_status else 'Deactivated'} '{target['name']}' on this shop")
+    flash(f"{target['name']} {'activated' if new_status else 'deactivated'} on this shop.", "success")
     return redirect(url_for("users"))
 
 
@@ -876,12 +1146,228 @@ def activity():
     with db.cursor() as cur:
         cur.execute(
             """SELECT a.id, a.action, a.description, a.created_at, p.name AS user_name
-               FROM activity_logs a LEFT JOIN profiles p ON p.id = a.user_id
+               FROM activity_logs a LEFT JOIN users p ON p.id = a.user_id
                WHERE a.shop_id = %s ORDER BY a.created_at DESC LIMIT 200""",
             (g.user["shop_id"],),
         )
         logs = cur.fetchall()
     return render_template("activity.html", logs=logs)
+
+
+# ------------------------------------------------------------------
+# Platform admin panel — onboards client shops, records payments
+# ------------------------------------------------------------------
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    if g.admin is not None:
+        return redirect(url_for("admin_dashboard"))
+
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT id, name, password_hash FROM platform_admins WHERE email = %s",
+                (email,),
+            )
+            admin = cur.fetchone()
+
+        if admin is None or not check_password_hash(admin["password_hash"], password):
+            flash("Incorrect email or password.", "danger")
+        else:
+            session.clear()
+            session["admin_id"] = str(admin["id"])
+            session["admin_name"] = admin["name"]
+            g.admin = {"id": admin["id"], "name": admin["name"]}
+            next_url = request.args.get("next")
+            return redirect(next_url or url_for("admin_dashboard"))
+
+    return render_template("admin_login.html")
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.clear()
+    flash("Logged out of the admin panel.", "info")
+    return redirect(url_for("admin_login"))
+
+
+@app.route("/admin")
+@admin_required
+def admin_dashboard():
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            """SELECT s.id, s.name, s.plan_type, s.subscription_period_end, s.created_at,
+                      (SELECT u.name FROM shop_members sm JOIN users u ON u.id = sm.user_id
+                       WHERE sm.shop_id = s.id AND sm.role = 'owner'
+                       ORDER BY sm.created_at ASC LIMIT 1) AS owner_name,
+                      (SELECT u.email FROM shop_members sm JOIN users u ON u.id = sm.user_id
+                       WHERE sm.shop_id = s.id AND sm.role = 'owner'
+                       ORDER BY sm.created_at ASC LIMIT 1) AS owner_email
+               FROM shops s ORDER BY s.created_at DESC"""
+        )
+        shops = cur.fetchall()
+
+    shop_rows = []
+    for shop in shops:
+        status = get_subscription_status(shop)
+        shop_rows.append({**shop, **status})
+
+    return render_template("admin_dashboard.html", shops=shop_rows)
+
+
+@app.route("/admin/shops/new", methods=["GET", "POST"])
+@admin_required
+def admin_shop_new():
+    """Create a client shop. If the owner's email already belongs to
+    an existing login (e.g. they already own another shop), that login
+    is linked as owner here too instead of creating a duplicate account
+    — this is what makes "one login, multiple shops" possible.
+    """
+    if request.method == "POST":
+        shop_name = request.form.get("shop_name", "").strip()
+        owner_name = request.form.get("owner_name", "").strip()
+        owner_email = request.form.get("owner_email", "").strip().lower()
+        owner_password = request.form.get("owner_password", "")
+        plan_type = request.form.get("plan_type", "monthly")
+        amount = parse_decimal(request.form.get("amount"), default=str(PLAN_PRICES.get(plan_type, 0)))
+
+        if plan_type not in PLAN_PRICES:
+            flash("Invalid plan type.", "danger")
+            return render_template("admin_shop_new.html", plan_prices=PLAN_PRICES, form=request.form)
+        if not shop_name or not owner_email:
+            flash("Shop name and owner email are required.", "danger")
+            return render_template("admin_shop_new.html", plan_prices=PLAN_PRICES, form=request.form)
+
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("SELECT id, name FROM users WHERE email = %s", (owner_email,))
+            existing = cur.fetchone()
+
+            if existing is None and (not owner_name or len(owner_password) < 6):
+                flash("For a brand-new owner, name and a password of at least 6 characters "
+                      "are required. To make an existing account the owner here too, just "
+                      "enter their email and leave the password blank.", "danger")
+                return render_template("admin_shop_new.html", plan_prices=PLAN_PRICES, form=request.form)
+
+            today = date.today()
+            period_end = today + timedelta(days=PLAN_LENGTH_DAYS[plan_type])
+
+            cur.execute(
+                """INSERT INTO shops (name, plan_type, subscription_period_end)
+                   VALUES (%s, %s, %s) RETURNING id""",
+                (shop_name, plan_type, period_end),
+            )
+            shop = cur.fetchone()
+
+            if existing is not None:
+                owner_id = existing["id"]
+                note = f"linked existing account ({existing['name']}, {owner_email}) as owner"
+            else:
+                cur.execute(
+                    "INSERT INTO users (name, email, password_hash) VALUES (%s, %s, %s) RETURNING id",
+                    (owner_name, owner_email, generate_password_hash(owner_password)),
+                )
+                owner_id = cur.fetchone()["id"]
+                note = f"created new owner account for {owner_email}"
+
+            cur.execute(
+                "INSERT INTO shop_members (shop_id, user_id, role) VALUES (%s, %s, 'owner')",
+                (shop["id"], owner_id),
+            )
+
+            cur.execute(
+                """INSERT INTO payments (shop_id, plan_type, amount, period_start,
+                   period_end, reference, recorded_by)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (shop["id"], plan_type, amount, today, period_end,
+                 "Initial signup", g.admin["id"]),
+            )
+
+        flash(f"Shop '{shop_name}' created — {note}.", "success")
+        return redirect(url_for("admin_dashboard"))
+
+    return render_template("admin_shop_new.html", plan_prices=PLAN_PRICES, form={})
+
+
+@app.route("/admin/shops/<shop_id>")
+@admin_required
+def admin_shop_detail(shop_id):
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT * FROM shops WHERE id = %s", (shop_id,))
+        shop = cur.fetchone()
+        if shop is None:
+            abort(404)
+
+        cur.execute(
+            """SELECT u.id, u.name, u.email, sm.role, sm.is_active
+               FROM shop_members sm JOIN users u ON u.id = sm.user_id
+               WHERE sm.shop_id = %s ORDER BY sm.created_at ASC""",
+            (shop_id,),
+        )
+        shop_users = cur.fetchall()
+
+        cur.execute(
+            """SELECT amount, plan_type, period_start, period_end, reference, created_at
+               FROM payments WHERE shop_id = %s ORDER BY created_at DESC""",
+            (shop_id,),
+        )
+        payment_history = cur.fetchall()
+
+    status = get_subscription_status(shop)
+    return render_template(
+        "admin_shop_detail.html",
+        shop=shop,
+        status=status,
+        shop_users=shop_users,
+        payment_history=payment_history,
+        plan_prices=PLAN_PRICES,
+    )
+
+
+@app.route("/admin/shops/<shop_id>/payment", methods=["POST"])
+@admin_required
+def admin_shop_payment(shop_id):
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT id, subscription_period_end FROM shops WHERE id = %s", (shop_id,))
+        shop = cur.fetchone()
+        if shop is None:
+            abort(404)
+
+        plan_type = request.form.get("plan_type", "monthly")
+        amount = parse_decimal(request.form.get("amount"), default=str(PLAN_PRICES.get(plan_type, 0)))
+        reference = request.form.get("reference", "").strip() or None
+
+        if plan_type not in PLAN_PRICES:
+            flash("Invalid plan type.", "danger")
+            return redirect(url_for("admin_shop_detail", shop_id=shop_id))
+
+        today = date.today()
+        current_end = shop["subscription_period_end"]
+        # Paying while still active/in-grace extends from the current
+        # period end (no paid days lost); paying after a lockout starts
+        # the new period from today instead.
+        period_start = current_end if current_end >= today else today
+        period_end = period_start + timedelta(days=PLAN_LENGTH_DAYS[plan_type])
+
+        cur.execute(
+            "UPDATE shops SET plan_type = %s, subscription_period_end = %s WHERE id = %s",
+            (plan_type, period_end, shop_id),
+        )
+        cur.execute(
+            """INSERT INTO payments (shop_id, plan_type, amount, period_start,
+               period_end, reference, recorded_by)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (shop_id, plan_type, amount, period_start, period_end, reference, g.admin["id"]),
+        )
+
+    flash(f"Payment recorded — subscription now runs to {period_end.strftime('%d %b %Y')}.", "success")
+    return redirect(url_for("admin_shop_detail", shop_id=shop_id))
 
 
 # ------------------------------------------------------------------

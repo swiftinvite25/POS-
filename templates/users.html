@@ -9,9 +9,16 @@
             <div class="card-header">Add Cashier</div>
             <div class="card-body">
                 <form method="post">
+                    <p class="text-muted small">
+                        If this person already has a login (e.g. they're the owner or
+                        a cashier on another shop), just enter their existing email and
+                        leave the password blank — we'll link their account here instead
+                        of creating a new one.
+                    </p>
                     <div class="mb-3">
                         <label class="form-label" for="name">Full name</label>
-                        <input class="form-control" id="name" name="name" required>
+                        <input class="form-control" id="name" name="name">
+                        <div class="form-text">Only needed for a brand-new account.</div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label" for="email">Email</label>
@@ -20,8 +27,8 @@
                     <div class="mb-3">
                         <label class="form-label" for="password">Password</label>
                         <input type="password" class="form-control" id="password" name="password"
-                               minlength="6" required>
-                        <div class="form-text">At least 6 characters.</div>
+                               minlength="6">
+                        <div class="form-text">At least 6 characters — leave blank to reuse an existing login.</div>
                     </div>
                     <button class="btn btn-primary w-100" type="submit">Add Cashier</button>
                 </form>

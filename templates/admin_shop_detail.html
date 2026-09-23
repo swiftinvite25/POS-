@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}{{ shop.name }} — Platform Admin{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">{{ shop.name }}</h1>
+<p class="text-muted mb-4">
+    {% if status.status == 'active' %}
+        <span class="badge bg-success">Active</span> — renews/expires
+        {{ status.period_end.strftime("%d %b %Y") }} ({{ status.days_left }} days left)
+    {% elif status.status == 'grace' %}
+        <span class="badge bg-warning text-dark">Grace period</span> — expired
+        {{ status.period_end.strftime("%d %b %Y") }}, locks in {{ status.days_left }} day(s)
+    {% else %}
+        <span class="badge bg-danger">Locked</span> — expired {{ status.period_end.strftime("%d %b %Y") }},
+        grace ended {{ status.grace_end.strftime("%d %b %Y") }}
+    {% endif %}
+</p>
+
+<div class="row g-3">
+    <div class="col-12 col-lg-5">
+        <div class="card mb-3">
+            <div class="card-header">Record a Payment</div>
+            <div class="card-body">
+                <form method="post" action="{{ url_for('admin_shop_payment', shop_id=shop.id) }}">
+                    <div class="row">
+                        <div class="col-6 mb-3">
+                            <label class="form-label" for="plan_type">Plan</label>
+                            <select class="form-select" id="plan_type" name="plan_type">
+                                <option value="monthly" data-price="{{ plan_prices.monthly }}"
+                                        {{ "selected" if shop.plan_type == "monthly" }}>
+                                    Monthly — {{ "{:,.0f}".format(plan_prices.monthly) }}
+                                </option>
+                                <option value="annual" data-price="{{ plan_prices.annual }}"
+                                        {{ "selected" if shop.plan_type == "annual" }}>
+                                    Annual — {{ "{:,.0f}".format(plan_prices.annual) }}
+                                </option>
+                            </select>
+                        </div>
+                        <div class="col-6 mb-3">
+                            <label class="form-label" for="amount">Amount (TSh)</label>
+                            <input type="number" step="0.01" min="0" class="form-control" id="amount"
+                                   name="amount" value="{{ plan_prices[shop.plan_type] }}" required>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="reference">Reference (optional)</label>
+                        <input class="form-control" id="reference" name="reference"
+                               placeholder="e.g. M-Pesa transaction ID">
+                    </div>
+                    <button class="btn btn-success w-100" type="submit">Record Payment</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">Users</div>
+            <ul class="list-group list-group-flush">
+                {% for u in shop_users %}
+                <li class="list-group-item d-flex justify-content-between">
+                    <span>{{ u.name }} <span class="text-muted">({{ u.email }})</span></span>
+                    <span>
+                        <span class="badge bg-secondary">{{ u.role }}</span>
+                        {% if not u.is_active %}<span class="badge bg-danger">Inactive</span>{% endif %}
+                    </span>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+
+    <div class="col-12 col-lg-7">
+        <div class="card">
+            <div class="card-header">Payment History</div>
+            <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <thead>
+                        <tr><th>Date</th><th>Plan</th><th class="text-end">Amount</th><th>Period</th><th>Reference</th></tr>
+                    </thead>
+                    <tbody>
+                    {% for p in payment_history %}
+                        <tr>
+                            <td>{{ p.created_at.strftime("%d %b %Y") }}</td>
+                            <td>{{ p.plan_type }}</td>
+                            <td class="text-end">{{ "{:,.0f}".format(p.amount) }}</td>
+                            <td>{{ p.period_start.strftime("%d %b") }} – {{ p.period_end.strftime("%d %b %Y") }}</td>
+                            <td class="text-muted">{{ p.reference or "—" }}</td>
+                        </tr>
+                    {% else %}
+                        <tr><td colspan="5" class="text-center text-muted py-4">No payments recorded yet.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById("plan_type").addEventListener("change", (e) => {
+    document.getElementById("amount").value = e.target.selectedOptions[0].dataset.price;
+});
+</script>
+{% endblock %}

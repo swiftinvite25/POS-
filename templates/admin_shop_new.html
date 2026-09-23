@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}New Shop — Platform Admin{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-12 col-md-8 col-lg-6">
+        <h1 class="h3 mb-3">New Client Shop</h1>
+        <div class="card">
+            <div class="card-body">
+                <form method="post">
+                    <div class="mb-3">
+                        <label class="form-label" for="shop_name">Shop name</label>
+                        <input class="form-control" id="shop_name" name="shop_name" required
+                               value="{{ form.get('shop_name', '') }}">
+                    </div>
+
+                    <hr>
+                    <p class="text-muted small mb-2">
+                        Owner account — if this person already owns another shop, enter
+                        their existing email and leave the name/password blank to link
+                        that same login as owner here too.
+                    </p>
+                    <div class="mb-3">
+                        <label class="form-label" for="owner_name">Owner full name</label>
+                        <input class="form-control" id="owner_name" name="owner_name"
+                               value="{{ form.get('owner_name', '') }}">
+                        <div class="form-text">Only needed for a brand-new owner account.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="owner_email">Owner email</label>
+                        <input type="email" class="form-control" id="owner_email" name="owner_email" required
+                               value="{{ form.get('owner_email', '') }}">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="owner_password">Owner password</label>
+                        <input type="password" class="form-control" id="owner_password"
+                               name="owner_password" minlength="6">
+                        <div class="form-text">At least 6 characters — leave blank to reuse an existing login.</div>
+                    </div>
+
+                    <hr>
+                    <p class="text-muted small mb-2">Billing (first payment, already received)</p>
+                    <div class="row">
+                        <div class="col-6 mb-3">
+                            <label class="form-label" for="plan_type">Plan</label>
+                            <select class="form-select" id="plan_type" name="plan_type">
+                                <option value="monthly" data-price="{{ plan_prices.monthly }}">
+                                    Monthly — {{ "{:,.0f}".format(plan_prices.monthly) }} TSh
+                                </option>
+                                <option value="annual" data-price="{{ plan_prices.annual }}">
+                                    Annual — {{ "{:,.0f}".format(plan_prices.annual) }} TSh (2 months free)
+                                </option>
+                            </select>
+                        </div>
+                        <div class="col-6 mb-3">
+                            <label class="form-label" for="amount">Amount received (TSh)</label>
+                            <input type="number" step="0.01" min="0" class="form-control" id="amount"
+                                   name="amount" value="{{ plan_prices.monthly }}" required>
+                        </div>
+                    </div>
+
+                    <button class="btn btn-primary w-100" type="submit">Create Shop</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById("plan_type").addEventListener("change", (e) => {
+    document.getElementById("amount").value = e.target.selectedOptions[0].dataset.price;
+});
+</script>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Shops — Platform Admin{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Client Shops</h1>
+    <a href="{{ url_for('admin_shop_new') }}" class="btn btn-primary">+ New Shop</a>
+</div>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead>
+                <tr>
+                    <th>Shop</th><th>Owner</th><th>Plan</th>
+                    <th>Subscription Ends</th><th>Status</th><th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for s in shops %}
+                <tr>
+                    <td>{{ s.name }}</td>
+                    <td>
+                        {{ s.owner_name or "—" }}
+                        <div class="small text-muted">{{ s.owner_email or "" }}</div>
+                    </td>
+                    <td><span class="badge bg-secondary">{{ s.plan_type }}</span></td>
+                    <td>{{ s.period_end.strftime("%d %b %Y") }}</td>
+                    <td>
+                        {% if s.status == 'active' %}
+                            <span class="badge bg-success">Active</span>
+                            <span class="small text-muted">({{ s.days_left }}d left)</span>
+                        {% elif s.status == 'grace' %}
+                            <span class="badge bg-warning text-dark">Grace period</span>
+                            <span class="small text-muted">({{ s.days_left }}d left)</span>
+                        {% else %}
+                            <span class="badge bg-danger">Locked</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-end">
+                        <a href="{{ url_for('admin_shop_detail', shop_id=s.id) }}"
+                           class="btn btn-sm btn-outline-secondary">Manage</a>
+                    </td>
+                </tr>
+            {% else %}
+                <tr><td colspan="6" class="text-center text-muted py-4">No shops yet.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

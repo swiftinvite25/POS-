@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Subscription Locked — Hardware Shop POS{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-12 col-md-8 col-lg-6">
+        <div class="card border-danger mt-4">
+            <div class="card-body text-center p-4">
+                <h1 class="h4 text-danger mb-3">🔒 Subscription Expired</h1>
+                <p>
+                    <strong>{{ shop_name }}</strong>'s subscription ended on
+                    {{ period_end.strftime("%d %b %Y") }}, and the 7-day grace period
+                    (which ran until {{ grace_end.strftime("%d %b %Y") }}) has now passed.
+                </p>
+                <p class="fs-5">
+                    Amount due ({{ plan_type }} plan): <strong>{{ "{:,.0f}".format(amount_due) }} TSh</strong>
+                </p>
+                <p class="text-muted">
+                    Please contact your service provider to make payment and restore access.
+                    Once payment is recorded, the system unlocks immediately — no need to wait.
+                </p>
+                <a href="{{ url_for('logout') }}" class="btn btn-outline-secondary mt-2">Logout</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

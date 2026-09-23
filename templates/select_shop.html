@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Select Shop — Hardware Shop POS{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-12 col-sm-8 col-md-6 col-lg-5">
+        <div class="card shadow-sm mt-5">
+            <div class="card-body p-4">
+                <h1 class="h4 mb-1 text-center">🛠️ Choose a Shop</h1>
+                <p class="text-muted text-center mb-4">You have access to more than one shop</p>
+                <form method="post">
+                    <div class="list-group mb-3">
+                        {% for s in shops %}
+                        <label class="list-group-item d-flex justify-content-between align-items-center" role="button">
+                            <span>
+                                <input class="form-check-input me-2" type="radio" name="shop_id"
+                                       value="{{ s.shop_id }}" required>
+                                {{ s.shop_name }}
+                            </span>
+                            <span class="badge bg-secondary">{{ s.role }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                    <button class="btn btn-primary w-100" type="submit">Continue</button>
+                </form>
+                <p class="text-center mt-3 mb-0">
+                    <a href="{{ url_for('logout') }}" class="small text-muted">Logout instead</a>
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
