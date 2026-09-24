@@ -103,6 +103,7 @@ def make_pagination(total, page, page_size, param):
         "page": page,
         "pages": pages,
         "total": total,
+        "page_size": page_size,
         "param": param,
     }
 

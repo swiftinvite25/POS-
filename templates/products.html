@@ -16,6 +16,7 @@
         <table class="table table-hover mb-0 align-middle">
             <thead>
                 <tr>
+                    <th>S/N</th>
                     <th>Name</th><th>SKU</th><th>Unit</th>
                     <th class="text-end">Buying</th><th class="text-end">Selling</th>
                     <th class="text-end">Stock</th><th class="text-end">Min</th><th></th>
@@ -24,6 +25,7 @@
             <tbody>
             {% for p in products %}
                 <tr class="{{ 'table-warning' if p.stock_quantity <= p.minimum_stock else '' }}">
+                    <td>{{ ((products_pagination.page - 1) * products_pagination.page_size) + loop.index }}</td>
                     <td>{{ p.name }}</td>
                     <td class="text-muted">{{ p.sku or "—" }}</td>
                     <td>{{ p.unit }}</td>
@@ -41,7 +43,7 @@
                     </td>
                 </tr>
             {% else %}
-                <tr><td colspan="8" class="text-center text-muted py-4">No products found.</td></tr>
+                <tr><td colspan="9" class="text-center text-muted py-4">No products found.</td></tr>
             {% endfor %}
             </tbody>
         </table>

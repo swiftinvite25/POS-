@@ -74,11 +74,12 @@
             <div class="table-responsive">
                 <table class="table table-sm mb-0">
                     <thead>
-                        <tr><th>Date</th><th>Plan</th><th class="text-end">Amount</th><th>Period</th><th>Reference</th></tr>
+                        <tr><th>S/N</th><th>Date</th><th>Plan</th><th class="text-end">Amount</th><th>Period</th><th>Reference</th></tr>
                     </thead>
                     <tbody>
                     {% for p in payment_history %}
                         <tr>
+                            <td>{{ ((payments_pagination.page - 1) * payments_pagination.page_size) + loop.index }}</td>
                             <td>{{ p.created_at.strftime("%d %b %Y") }}</td>
                             <td>{{ p.plan_type }}</td>
                             <td class="text-end">{{ "{:,.0f}".format(p.amount) }}</td>
@@ -86,7 +87,7 @@
                             <td class="text-muted">{{ p.reference or "—" }}</td>
                         </tr>
                     {% else %}
-                        <tr><td colspan="5" class="text-center text-muted py-4">No payments recorded yet.</td></tr>
+                        <tr><td colspan="6" class="text-center text-muted py-4">No payments recorded yet.</td></tr>
                     {% endfor %}
                     </tbody>
                 </table>

@@ -43,11 +43,12 @@
             <div class="table-responsive">
                 <table class="table table-sm mb-0 align-middle">
                     <thead>
-                        <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr>
+                        <tr><th>S/N</th><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr>
                     </thead>
                     <tbody>
                     {% for u in users %}
                         <tr>
+                            <td>{{ ((users_pagination.page - 1) * users_pagination.page_size) + loop.index }}</td>
                             <td>{{ u.name }}</td>
                             <td class="text-muted">{{ u.email }}</td>
                             <td><span class="badge bg-secondary">{{ u.role }}</span></td>

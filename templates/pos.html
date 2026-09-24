@@ -17,17 +17,18 @@
             <div class="card-header">Recent Sales</div>
             <div class="table-responsive">
                 <table class="table table-sm mb-0">
-                    <thead><tr><th>Time</th><th>Cashier</th><th>Payment</th><th class="text-end">Total</th></tr></thead>
+                    <thead><tr><th>S/N</th><th>Time</th><th>Cashier</th><th>Payment</th><th class="text-end">Total</th></tr></thead>
                     <tbody>
                     {% for s in recent_sales %}
                         <tr>
+                            <td>{{ ((sales_pagination.page - 1) * sales_pagination.page_size) + loop.index }}</td>
                             <td>{{ s.created_at.strftime("%d %b %H:%M") }}</td>
                             <td>{{ s.cashier_name }}</td>
                             <td>{{ s.payment_method }}</td>
                             <td class="text-end">{{ "{:,.0f}".format(s.total_amount) }}</td>
                         </tr>
                     {% else %}
-                        <tr><td colspan="4" class="text-muted">No sales yet.</td></tr>
+                        <tr><td colspan="5" class="text-muted">No sales yet.</td></tr>
                     {% endfor %}
                     </tbody>
                 </table>

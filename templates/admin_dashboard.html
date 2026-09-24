@@ -11,13 +11,14 @@
         <table class="table table-hover mb-0 align-middle">
             <thead>
                 <tr>
-                    <th>Shop</th><th>Owner</th><th>Plan</th>
+                    <th>S/N</th><th>Shop</th><th>Owner</th><th>Plan</th>
                     <th>Subscription Ends</th><th>Status</th><th></th>
                 </tr>
             </thead>
             <tbody>
             {% for s in shops %}
                 <tr>
+                    <td>{{ ((shops_pagination.page - 1) * shops_pagination.page_size) + loop.index }}</td>
                     <td>{{ s.name }}</td>
                     <td>
                         {{ s.owner_name or "—" }}
@@ -42,7 +43,7 @@
                     </td>
                 </tr>
             {% else %}
-                <tr><td colspan="6" class="text-center text-muted py-4">No shops yet.</td></tr>
+                <tr><td colspan="7" class="text-center text-muted py-4">No shops yet.</td></tr>
             {% endfor %}
             </tbody>
         </table>

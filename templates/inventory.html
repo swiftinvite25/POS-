@@ -55,11 +55,12 @@
             <div class="table-responsive">
                 <table class="table table-sm mb-0">
                     <thead>
-                        <tr><th>Date</th><th>Product</th><th>Supplier</th><th class="text-end">Qty</th><th class="text-end">Total</th></tr>
+                        <tr><th>S/N</th><th>Date</th><th>Product</th><th>Supplier</th><th class="text-end">Qty</th><th class="text-end">Total</th></tr>
                     </thead>
                     <tbody>
                     {% for h in purchase_history %}
                         <tr>
+                            <td>{{ ((purchases_pagination.page - 1) * purchases_pagination.page_size) + loop.index }}</td>
                             <td>{{ h.created_at.strftime("%d %b %Y") }}</td>
                             <td>{{ h.product_name }}</td>
                             <td>{{ h.supplier_name or "—" }}</td>
@@ -67,7 +68,7 @@
                             <td class="text-end">{{ "{:,.0f}".format(h.total_amount) }}</td>
                         </tr>
                     {% else %}
-                        <tr><td colspan="5" class="text-center text-muted py-4">No purchases recorded yet.</td></tr>
+                        <tr><td colspan="6" class="text-center text-muted py-4">No purchases recorded yet.</td></tr>
                     {% endfor %}
                     </tbody>
                 </table>

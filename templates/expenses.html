@@ -52,24 +52,25 @@
             <div class="table-responsive">
                 <table class="table table-sm mb-0">
                     <thead>
-                        <tr><th>Date</th><th>Description</th><th>Category</th><th class="text-end">Amount</th></tr>
+                        <tr><th>S/N</th><th>Date</th><th>Description</th><th>Category</th><th class="text-end">Amount</th></tr>
                     </thead>
                     <tbody>
                     {% for e in expenses %}
                         <tr>
+                            <td>{{ ((expenses_pagination.page - 1) * expenses_pagination.page_size) + loop.index }}</td>
                             <td>{{ e.created_at.strftime("%d %b %Y") }}</td>
                             <td>{{ e.description }}</td>
                             <td><span class="badge bg-secondary">{{ e.category }}</span></td>
                             <td class="text-end">{{ "{:,.0f}".format(e.amount) }}</td>
                         </tr>
                     {% else %}
-                        <tr><td colspan="4" class="text-center text-muted py-4">No expenses found.</td></tr>
+                        <tr><td colspan="5" class="text-center text-muted py-4">No expenses found.</td></tr>
                     {% endfor %}
                     </tbody>
                     {% if expenses %}
                     <tfoot>
                         <tr class="table-light fw-semibold">
-                            <td colspan="3" class="text-end">Total</td>
+                            <td colspan="4" class="text-end">Total</td>
                             <td class="text-end">{{ "{:,.0f}".format(total) }}</td>
                         </tr>
                     </tfoot>
