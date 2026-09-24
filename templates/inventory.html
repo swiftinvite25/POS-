@@ -45,6 +45,7 @@
                     <button class="btn btn-primary w-100" type="submit">Save Purchase</button>
                 </form>
             </div>
+            {% with pagination=purchases_pagination %}{% include "_pagination.html" %}{% endwith %}
         </div>
     </div>
 

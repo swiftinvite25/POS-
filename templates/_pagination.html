@@ -1,0 +1,14 @@
+{% if pagination.pages > 1 %}
+<nav class="pagination-wrap" aria-label="Table pagination">
+    <span class="pagination-summary">{{ pagination.total }} records</span>
+    <div class="pagination-links">
+        {% if pagination.page > 1 %}
+        <a class="btn btn-sm btn-outline-secondary" href="{{ pagination_url(pagination.param, pagination.page - 1) }}">Previous</a>
+        {% endif %}
+        <span class="pagination-current">Page {{ pagination.page }} of {{ pagination.pages }}</span>
+        {% if pagination.page < pagination.pages %}
+        <a class="btn btn-sm btn-outline-secondary" href="{{ pagination_url(pagination.param, pagination.page + 1) }}">Next</a>
+        {% endif %}
+    </div>
+</nav>
+{% endif %}

@@ -28,6 +28,7 @@
                     <button class="btn btn-primary w-100" type="submit">Save Expense</button>
                 </form>
             </div>
+            {% with pagination=expenses_pagination %}{% include "_pagination.html" %}{% endwith %}
         </div>
     </div>
 

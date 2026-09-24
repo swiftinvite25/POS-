@@ -10,6 +10,7 @@
                        placeholder="Start typing..." autocomplete="off" autofocus>
                 <div id="search-results" class="list-group mt-2"></div>
             </div>
+            {% with pagination=sales_pagination %}{% include "_pagination.html" %}{% endwith %}
         </div>
 
         <div class="card">

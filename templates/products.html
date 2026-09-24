@@ -46,5 +46,6 @@
             </tbody>
         </table>
     </div>
+    {% with pagination=products_pagination %}{% include "_pagination.html" %}{% endwith %}
 </div>
 {% endblock %}

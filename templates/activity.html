@@ -24,5 +24,6 @@
         </table>
     </div>
 </div>
-<p class="text-muted small mt-2">Showing the most recent 200 entries.</p>
+{% with pagination=logs_pagination %}{% include "_pagination.html" %}{% endwith %}
+<p class="text-muted small mt-2">Showing {{ logs_pagination.total }} entries across {{ logs_pagination.pages }} page{{ 's' if logs_pagination.pages != 1 else '' }}.</p>
 {% endblock %}

@@ -67,6 +67,7 @@ EXPENSE_CATEGORIES = ["Transport", "Electricity", "Rent", "Salary", "Other"]
 PLAN_PRICES = {"monthly": 50_000, "annual": 500_000}  # annual = ~2 months free
 PLAN_LENGTH_DAYS = {"monthly": 30, "annual": 365}
 GRACE_PERIOD_DAYS = 7
+DEFAULT_PAGE_SIZE = 25
 
 
 # ------------------------------------------------------------------
@@ -84,6 +85,36 @@ def get_db():
             cursor_factory=psycopg2.extras.RealDictCursor,
         )
     return g.db
+
+
+def get_page_params(param="page", page_size=DEFAULT_PAGE_SIZE):
+    """Return a safe 1-based page and SQL offset for a table."""
+    try:
+        page = max(1, int(request.args.get(param, 1)))
+    except (TypeError, ValueError):
+        page = 1
+    return page, page_size, (page - 1) * page_size
+
+
+def make_pagination(total, page, page_size, param):
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, pages)
+    return {
+        "page": page,
+        "pages": pages,
+        "total": total,
+        "param": param,
+    }
+
+
+@app.context_processor
+def pagination_helpers():
+    def pagination_url(param, page):
+        values = request.args.to_dict()
+        values[param] = page
+        return url_for(request.endpoint, **values)
+
+    return {"pagination_url": pagination_url}
 
 
 @app.teardown_appcontext
@@ -549,27 +580,33 @@ def dashboard():
 def pos():
     db = get_db()
     shop_id = g.user["shop_id"]
+    page, page_size, offset = get_page_params("sales_page")
 
     with db.cursor() as cur:
         # Sales history: cashiers see their own sales, owners see all.
         if g.user["role"] == "owner":
+            cur.execute("SELECT COUNT(*) AS count FROM sales WHERE shop_id = %s", (shop_id,))
+            sales_total = cur.fetchone()["count"]
             cur.execute(
                 """SELECT s.id, s.total_amount, s.payment_method, s.created_at, p.name AS cashier_name
                    FROM sales s JOIN users p ON p.id = s.cashier_id
-                   WHERE s.shop_id = %s ORDER BY s.created_at DESC LIMIT 20""",
-                (shop_id,),
+                   WHERE s.shop_id = %s ORDER BY s.created_at DESC LIMIT %s OFFSET %s""",
+                (shop_id, page_size, offset),
             )
         else:
+            cur.execute("SELECT COUNT(*) AS count FROM sales WHERE shop_id = %s AND cashier_id = %s", (shop_id, g.user["id"]))
+            sales_total = cur.fetchone()["count"]
             cur.execute(
                 """SELECT s.id, s.total_amount, s.payment_method, s.created_at, p.name AS cashier_name
                    FROM sales s JOIN users p ON p.id = s.cashier_id
                    WHERE s.shop_id = %s AND s.cashier_id = %s
-                   ORDER BY s.created_at DESC LIMIT 20""",
-                (shop_id, g.user["id"]),
+                   ORDER BY s.created_at DESC LIMIT %s OFFSET %s""",
+                (shop_id, g.user["id"], page_size, offset),
             )
         recent_sales = cur.fetchall()
 
-    return render_template("pos.html", recent_sales=recent_sales)
+    return render_template("pos.html", recent_sales=recent_sales,
+                           sales_pagination=make_pagination(sales_total, page, page_size, "sales_page"))
 
 
 @app.route("/pos/search")
@@ -704,16 +741,24 @@ def pos_checkout():
 @owner_required
 def products():
     query = request.args.get("q", "").strip()
+    page, page_size, offset = get_page_params("products_page")
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
-            """SELECT * FROM products
-               WHERE shop_id = %s AND (name ILIKE %s OR sku ILIKE %s)
-               ORDER BY name ASC""",
+            """SELECT COUNT(*) AS count FROM products
+               WHERE shop_id = %s AND (name ILIKE %s OR sku ILIKE %s)""",
             (g.user["shop_id"], f"%{query}%", f"%{query}%"),
         )
+        products_total = cur.fetchone()["count"]
+        cur.execute(
+            """SELECT * FROM products
+               WHERE shop_id = %s AND (name ILIKE %s OR sku ILIKE %s)
+               ORDER BY name ASC LIMIT %s OFFSET %s""",
+            (g.user["shop_id"], f"%{query}%", f"%{query}%", page_size, offset),
+        )
         product_list = cur.fetchall()
-    return render_template("products.html", products=product_list, query=query)
+    return render_template("products.html", products=product_list, query=query,
+                           products_pagination=make_pagination(products_total, page, page_size, "products_page"))
 
 
 @app.route("/products/add", methods=["GET", "POST"])
@@ -805,6 +850,7 @@ def product_edit(product_id):
 def inventory():
     db = get_db()
     shop_id = g.user["shop_id"]
+    page, page_size, offset = get_page_params("purchases_page")
 
     if request.method == "POST":
         product_id = request.form.get("product_id")
@@ -877,19 +923,28 @@ def inventory():
         product_list = cur.fetchall()
 
         cur.execute(
+            """SELECT COUNT(*) AS count
+               FROM purchases pu JOIN purchase_items pi ON pi.purchase_id = pu.id
+               JOIN products pr ON pr.id = pi.product_id WHERE pu.shop_id = %s""",
+            (shop_id,),
+        )
+        purchases_total = cur.fetchone()["count"]
+
+        cur.execute(
             """SELECT pu.id, pu.supplier_name, pu.total_amount, pu.created_at,
                       pi.quantity, pi.buying_price, pr.name AS product_name, pr.unit
                FROM purchases pu
                JOIN purchase_items pi ON pi.purchase_id = pu.id
                JOIN products pr ON pr.id = pi.product_id
                WHERE pu.shop_id = %s
-               ORDER BY pu.created_at DESC LIMIT 30""",
-            (shop_id,),
+                    ORDER BY pu.created_at DESC LIMIT %s OFFSET %s""",
+                (shop_id, page_size, offset),
         )
         purchase_history = cur.fetchall()
 
     return render_template(
-        "inventory.html", products=product_list, purchase_history=purchase_history
+        "inventory.html", products=product_list, purchase_history=purchase_history,
+        purchases_pagination=make_pagination(purchases_total, page, page_size, "purchases_page")
     )
 
 
@@ -922,21 +977,24 @@ def expenses():
 
     start_date = request.args.get("start_date", "")
     end_date = request.args.get("end_date", "")
+    page, page_size, offset = get_page_params("expenses_page")
 
-    query = "SELECT * FROM expenses WHERE shop_id = %s"
+    filters = " WHERE shop_id = %s"
     params = [shop_id]
     if start_date:
-        query += " AND created_at::date >= %s"
+        filters += " AND created_at::date >= %s"
         params.append(start_date)
     if end_date:
-        query += " AND created_at::date <= %s"
+        filters += " AND created_at::date <= %s"
         params.append(end_date)
-    query += " ORDER BY created_at DESC LIMIT 100"
 
     with db.cursor() as cur:
-        cur.execute(query, params)
+        cur.execute("SELECT COUNT(*) AS count FROM expenses" + filters, params)
+        expenses_total = cur.fetchone()["count"]
+        cur.execute("SELECT COALESCE(SUM(amount), 0) AS total FROM expenses" + filters, params)
+        total = cur.fetchone()["total"]
+        cur.execute("SELECT * FROM expenses" + filters + " ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [page_size, offset])
         expense_list = cur.fetchall()
-        total = sum(float(e["amount"]) for e in expense_list)
 
     return render_template(
         "expenses.html",
@@ -945,6 +1003,7 @@ def expenses():
         start_date=start_date,
         end_date=end_date,
         total=total,
+        expenses_pagination=make_pagination(expenses_total, page, page_size, "expenses_page"),
     )
 
 
@@ -984,7 +1043,7 @@ def reports():
                WHERE s.shop_id = %s AND s.created_at::date >= %s""",
             (shop_id, start),
         )
-        gross_profit = cur.fetchone()["gross_profit"]
+        gross_profit = float(cur.fetchone()["gross_profit"] or 0)
 
         cur.execute(
             """SELECT category, COALESCE(SUM(amount), 0) AS total FROM expenses
@@ -993,7 +1052,7 @@ def reports():
             (shop_id, start),
         )
         expenses_by_category = cur.fetchall()
-        total_expenses = sum(float(e["total"]) for e in expenses_by_category)
+        total_expenses = float(sum(float(e["total"]) for e in expenses_by_category))
 
         cur.execute(
             """SELECT s.created_at::date AS day, COUNT(*) AS count, SUM(s.total_amount) AS total
@@ -1027,6 +1086,7 @@ def reports():
 def users():
     db = get_db()
     shop_id = g.user["shop_id"]
+    page, page_size, offset = get_page_params("users_page")
 
     if request.method == "POST":
         name = request.form.get("name", "").strip()
@@ -1086,15 +1146,18 @@ def users():
                 return redirect(url_for("users"))
 
     with db.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS count FROM shop_members WHERE shop_id = %s", (shop_id,))
+        users_total = cur.fetchone()["count"]
         cur.execute(
             """SELECT u.id, u.name, u.email, sm.role, sm.is_active, sm.created_at
                FROM shop_members sm JOIN users u ON u.id = sm.user_id
-               WHERE sm.shop_id = %s ORDER BY sm.created_at ASC""",
-            (shop_id,),
+                    WHERE sm.shop_id = %s ORDER BY sm.created_at ASC LIMIT %s OFFSET %s""",
+                (shop_id, page_size, offset),
         )
         user_list = cur.fetchall()
 
-    return render_template("users.html", users=user_list)
+    return render_template("users.html", users=user_list,
+                           users_pagination=make_pagination(users_total, page, page_size, "users_page"))
 
 
 @app.route("/users/<user_id>/toggle", methods=["POST"])
@@ -1143,15 +1206,19 @@ def user_toggle(user_id):
 @owner_required
 def activity():
     db = get_db()
+    page, page_size, offset = get_page_params("activity_page")
     with db.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS count FROM activity_logs WHERE shop_id = %s", (g.user["shop_id"],))
+        logs_total = cur.fetchone()["count"]
         cur.execute(
             """SELECT a.id, a.action, a.description, a.created_at, p.name AS user_name
                FROM activity_logs a LEFT JOIN users p ON p.id = a.user_id
-               WHERE a.shop_id = %s ORDER BY a.created_at DESC LIMIT 200""",
-            (g.user["shop_id"],),
+                    WHERE a.shop_id = %s ORDER BY a.created_at DESC LIMIT %s OFFSET %s""",
+                (g.user["shop_id"], page_size, offset),
         )
         logs = cur.fetchall()
-    return render_template("activity.html", logs=logs)
+    return render_template("activity.html", logs=logs,
+                           logs_pagination=make_pagination(logs_total, page, page_size, "activity_page"))
 
 
 # ------------------------------------------------------------------
@@ -1198,7 +1265,10 @@ def admin_logout():
 @admin_required
 def admin_dashboard():
     db = get_db()
+    page, page_size, offset = get_page_params("shops_page")
     with db.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS count FROM shops")
+        shops_total = cur.fetchone()["count"]
         cur.execute(
             """SELECT s.id, s.name, s.plan_type, s.subscription_period_end, s.created_at,
                       (SELECT u.name FROM shop_members sm JOIN users u ON u.id = sm.user_id
@@ -1207,7 +1277,8 @@ def admin_dashboard():
                       (SELECT u.email FROM shop_members sm JOIN users u ON u.id = sm.user_id
                        WHERE sm.shop_id = s.id AND sm.role = 'owner'
                        ORDER BY sm.created_at ASC LIMIT 1) AS owner_email
-               FROM shops s ORDER BY s.created_at DESC"""
+                    FROM shops s ORDER BY s.created_at DESC LIMIT %s OFFSET %s""",
+                (page_size, offset),
         )
         shops = cur.fetchall()
 
@@ -1216,7 +1287,8 @@ def admin_dashboard():
         status = get_subscription_status(shop)
         shop_rows.append({**shop, **status})
 
-    return render_template("admin_dashboard.html", shops=shop_rows)
+    return render_template("admin_dashboard.html", shops=shop_rows,
+                           shops_pagination=make_pagination(shops_total, page, page_size, "shops_page"))
 
 
 @app.route("/admin/shops/new", methods=["GET", "POST"])
@@ -1297,24 +1369,30 @@ def admin_shop_new():
 @admin_required
 def admin_shop_detail(shop_id):
     db = get_db()
+    users_page, page_size, users_offset = get_page_params("shop_users_page")
+    payments_page, _, payments_offset = get_page_params("payments_page")
     with db.cursor() as cur:
         cur.execute("SELECT * FROM shops WHERE id = %s", (shop_id,))
         shop = cur.fetchone()
         if shop is None:
             abort(404)
 
+        cur.execute("SELECT COUNT(*) AS count FROM shop_members WHERE shop_id = %s", (shop_id,))
+        shop_users_total = cur.fetchone()["count"]
         cur.execute(
             """SELECT u.id, u.name, u.email, sm.role, sm.is_active
                FROM shop_members sm JOIN users u ON u.id = sm.user_id
-               WHERE sm.shop_id = %s ORDER BY sm.created_at ASC""",
-            (shop_id,),
+               WHERE sm.shop_id = %s ORDER BY sm.created_at ASC LIMIT %s OFFSET %s""",
+            (shop_id, page_size, users_offset),
         )
         shop_users = cur.fetchall()
 
+        cur.execute("SELECT COUNT(*) AS count FROM payments WHERE shop_id = %s", (shop_id,))
+        payments_total = cur.fetchone()["count"]
         cur.execute(
             """SELECT amount, plan_type, period_start, period_end, reference, created_at
-               FROM payments WHERE shop_id = %s ORDER BY created_at DESC""",
-            (shop_id,),
+                    FROM payments WHERE shop_id = %s ORDER BY created_at DESC LIMIT %s OFFSET %s""",
+                (shop_id, page_size, payments_offset),
         )
         payment_history = cur.fetchall()
 
@@ -1326,6 +1404,8 @@ def admin_shop_detail(shop_id):
         shop_users=shop_users,
         payment_history=payment_history,
         plan_prices=PLAN_PRICES,
+        shop_users_pagination=make_pagination(shop_users_total, users_page, page_size, "shop_users_page"),
+        payments_pagination=make_pagination(payments_total, payments_page, page_size, "payments_page"),
     )
 
 

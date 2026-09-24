@@ -33,6 +33,7 @@
                     <button class="btn btn-primary w-100" type="submit">Add Cashier</button>
                 </form>
             </div>
+            {% with pagination=users_pagination %}{% include "_pagination.html" %}{% endwith %}
         </div>
     </div>
 

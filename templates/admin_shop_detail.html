@@ -65,6 +65,7 @@
                 {% endfor %}
             </ul>
         </div>
+            {% with pagination=shop_users_pagination %}{% include "_pagination.html" %}{% endwith %}
     </div>
 
     <div class="col-12 col-lg-7">
@@ -90,6 +91,7 @@
                     </tbody>
                 </table>
             </div>
+            {% with pagination=payments_pagination %}{% include "_pagination.html" %}{% endwith %}
         </div>
     </div>
 </div>
