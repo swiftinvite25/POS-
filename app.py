@@ -1040,7 +1040,7 @@ def customer_statement_pdf(customer_id):
     pdf = canvas.Canvas(buffer, pagesize=letter)
     pdf.setTitle(f"Customer Statement - {customer['name']}")
     pdf.setFont("Helvetica-Bold", 16)
-    pdf.drawString(50, 760, "Hardware Shop POS - Customer Statement")
+    pdf.drawString(50, 760, "Swift POS - Customer Statement")
     pdf.setFont("Helvetica", 11)
     pdf.drawString(50, 740, f"Customer: {customer['name']}")
     pdf.drawString(50, 725, f"Phone: {customer['phone'] or 'N/A'}")
@@ -1246,7 +1246,7 @@ def inventory_stock_pdf():
 
     def draw_header():
         pdf.setFont("Helvetica-Bold", 16)
-        pdf.drawString(40, 760, "Hardware Shop POS - Stock Report")
+        pdf.drawString(40, 760, "Swift POS - Stock Report")
         pdf.setFont("Helvetica-Bold", 9)
         pdf.drawString(40, 735, "Product")
         pdf.drawString(190, 735, "SKU")
@@ -1622,7 +1622,7 @@ def reports_export_pdf():
     pdf = canvas.Canvas(output, pagesize=letter)
     pdf.setTitle(f"Sales Report - {data['label']}")
     pdf.setFont("Helvetica-Bold", 16)
-    pdf.drawString(45, 760, f"Hardware Shop POS - Report ({data['label']})")
+    pdf.drawString(45, 760, f"Swift POS - Report ({data['label']})")
     pdf.setFont("Helvetica", 11)
     metrics = [
         ("Transactions", data["sales_summary"]["count"]),
