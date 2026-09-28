@@ -1,5 +1,5 @@
 """
-Hardware Shop POS — Flask application.
+Swift POS — Flask application.
 
 Single-file Flask app (per the project's "keep it simple" scope):
   - Session-based auth with hashed passwords, two roles (owner, cashier)
