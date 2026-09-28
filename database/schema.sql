@@ -172,6 +172,36 @@ create index if not exists idx_sale_items_sale_id on sale_items(sale_id);
 create index if not exists idx_sale_items_product_id on sale_items(product_id);
 
 -- ------------------------------------------------------------
+-- customers
+-- ------------------------------------------------------------
+create table if not exists customers (
+    id          uuid primary key default gen_random_uuid(),
+    shop_id     uuid not null references shops(id) on delete cascade,
+    name        text not null,
+    phone       text,
+    email       text,
+    address     text,
+    created_at  timestamptz not null default now()
+);
+
+create index if not exists idx_customers_shop_id on customers(shop_id);
+
+create table if not exists customer_ledger (
+    id          uuid primary key default gen_random_uuid(),
+    shop_id     uuid not null references shops(id) on delete cascade,
+    customer_id uuid not null references customers(id) on delete cascade,
+    user_id     uuid not null references users(id),
+    entry_type  text not null check (entry_type in ('credit', 'payment', 'adjustment')),
+    amount      numeric(12, 2) not null check (amount >= 0),
+    note        text,
+    reference   text,
+    created_at  timestamptz not null default now()
+);
+
+create index if not exists idx_customer_ledger_customer_id on customer_ledger(customer_id);
+create index if not exists idx_customer_ledger_shop_id on customer_ledger(shop_id);
+
+-- ------------------------------------------------------------
 -- purchases
 -- ------------------------------------------------------------
 create table if not exists purchases (

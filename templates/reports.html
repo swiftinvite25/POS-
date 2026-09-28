@@ -3,10 +3,16 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h1 class="h3 mb-0">Reports</h1>
+    <div class="d-flex flex-wrap gap-2">
     <div class="btn-group">
         <a href="{{ url_for('reports', period='daily') }}" class="btn btn-outline-primary {{ 'active' if period == 'daily' }}">Daily</a>
         <a href="{{ url_for('reports', period='weekly') }}" class="btn btn-outline-primary {{ 'active' if period == 'weekly' }}">Weekly</a>
         <a href="{{ url_for('reports', period='monthly') }}" class="btn btn-outline-primary {{ 'active' if period == 'monthly' }}">Monthly</a>
+    </div>
+    <div class="btn-group">
+        <a href="{{ url_for('reports_export_excel', period=period) }}" class="btn btn-outline-success">Pakua Excel</a>
+        <a href="{{ url_for('reports_export_pdf', period=period) }}" class="btn btn-outline-danger">Pakua PDF</a>
+    </div>
     </div>
 </div>
 <p class="text-muted">{{ label }}</p>
@@ -38,9 +44,9 @@
         </div>
     </div>
     <div class="col-6 col-md-3">
-        <div class="card {{ 'text-bg-success' if estimated_profit >= 0 else 'text-bg-warning' }} h-100">
+        <div class="card {{ 'text-bg-success' if estimated_profit >= 0 else 'text-bg-danger' }} h-100">
             <div class="card-body">
-                <div class="small text-white-50">Estimated Profit</div>
+                <div class="small text-white-50">{{ 'Profit' if estimated_profit >= 0 else 'Loss' }}</div>
                 <div class="fs-4 fw-semibold">{{ "{:,.0f}".format(estimated_profit) }} TSh</div>
             </div>
         </div>
