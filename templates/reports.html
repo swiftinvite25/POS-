@@ -3,10 +3,16 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h1 class="h3 mb-0">Reports</h1>
+    <div class="d-flex flex-wrap gap-2">
     <div class="btn-group">
         <a href="{{ url_for('reports', period='daily') }}" class="btn btn-outline-primary {{ 'active' if period == 'daily' }}">Daily</a>
         <a href="{{ url_for('reports', period='weekly') }}" class="btn btn-outline-primary {{ 'active' if period == 'weekly' }}">Weekly</a>
         <a href="{{ url_for('reports', period='monthly') }}" class="btn btn-outline-primary {{ 'active' if period == 'monthly' }}">Monthly</a>
+    </div>
+    <div class="btn-group">
+        <a href="{{ url_for('reports_export_excel', period=period) }}" class="btn btn-outline-success">Pakua Excel</a>
+        <a href="{{ url_for('reports_export_pdf', period=period) }}" class="btn btn-outline-danger">Pakua PDF</a>
+    </div>
     </div>
 </div>
 <p class="text-muted">{{ label }}</p>

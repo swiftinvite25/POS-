@@ -18,15 +18,20 @@ the one rule that must never be broken as this file grows.
 """
 
 import os
+import re
 import uuid
 from datetime import date, datetime, timedelta
 from functools import wraps
+from io import BytesIO
 
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
+from openpyxl import Workbook, load_workbook
+from pypdf import PdfReader
 from flask import (
     Flask,
+    Response,
     abort,
     flash,
     g,
@@ -37,7 +42,10 @@ from flask import (
     session,
     url_for,
 )
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 load_dotenv()
 
@@ -68,6 +76,7 @@ PLAN_PRICES = {"monthly": 50_000, "annual": 500_000}  # annual = ~2 months free
 PLAN_LENGTH_DAYS = {"monthly": 30, "annual": 365}
 GRACE_PERIOD_DAYS = 7
 DEFAULT_PAGE_SIZE = 25
+SUPPORTED_LANGUAGES = {"sw": "Kiswahili", "en": "English"}
 
 
 # ------------------------------------------------------------------
@@ -118,6 +127,13 @@ def pagination_helpers():
     return {"pagination_url": pagination_url}
 
 
+@app.route("/language/<language>")
+def set_language(language):
+    if language in SUPPORTED_LANGUAGES:
+        session["language"] = language
+    return redirect(request.referrer or url_for("index"))
+
+
 @app.teardown_appcontext
 def close_db(exception=None):
     db = g.pop("db", None)
@@ -127,6 +143,49 @@ def close_db(exception=None):
         else:
             db.rollback()
         db.close()
+
+
+def ensure_customer_ledger_schema():
+    """Create the customer ledger tables required for customer accounts."""
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS customers (
+                id uuid primary key default gen_random_uuid(),
+                shop_id uuid not null references shops(id) on delete cascade,
+                name text not null,
+                phone text,
+                email text,
+                address text,
+                created_at timestamptz not null default now()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS customer_ledger (
+                id uuid primary key default gen_random_uuid(),
+                shop_id uuid not null references shops(id) on delete cascade,
+                customer_id uuid not null references customers(id) on delete cascade,
+                user_id uuid not null references users(id),
+                entry_type text not null check (entry_type in ('credit', 'payment', 'adjustment')),
+                amount numeric(12, 2) not null check (amount >= 0),
+                note text,
+                reference text,
+                created_at timestamptz not null default now()
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_customers_shop_id ON customers(shop_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_customer_ledger_customer_id ON customer_ledger(customer_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_customer_ledger_shop_id ON customer_ledger(shop_id)")
+
+
+@app.before_request
+def bootstrap_customer_features():
+    """Ensure customer-ledger tables exist before routes run."""
+    ensure_customer_ledger_schema()
 
 
 # ------------------------------------------------------------------
@@ -319,6 +378,73 @@ def parse_decimal(value, default="0"):
         return float(default)
 
 
+def parse_stock_import(file_storage):
+    """Read stock rows from an XLSX workbook or a delimited PDF text table."""
+    filename = secure_filename(file_storage.filename or "")
+    extension = os.path.splitext(filename)[1].lower()
+    if extension not in {".xlsx", ".pdf"}:
+        raise ValueError("Tumia faili la Excel (.xlsx) au PDF (.pdf) pekee.")
+
+    payload = file_storage.read()
+    if not payload:
+        raise ValueError("Faili ulilochagua halina taarifa.")
+
+    if extension == ".xlsx":
+        workbook = load_workbook(BytesIO(payload), read_only=True, data_only=True)
+        sheet = workbook.active
+        values = list(sheet.iter_rows(values_only=True))
+        if not values:
+            raise ValueError("Excel haina mistari ya taarifa.")
+
+        headers = [str(value or "").strip().lower().replace(" ", "_") for value in values[0]]
+        aliases = {
+            "product": {"product", "product_name", "name", "sku"},
+            "quantity": {"quantity", "qty", "stock_quantity"},
+            "buying_price": {"buying_price", "purchase_price", "unit_price", "price"},
+            "supplier_name": {"supplier", "supplier_name", "vendor"},
+        }
+        columns = {}
+        for field, names in aliases.items():
+            columns[field] = next((index for index, header in enumerate(headers) if header in names), None)
+        missing = [field for field in ("product", "quantity", "buying_price") if columns[field] is None]
+        if missing:
+            raise ValueError("Excel inahitaji columns: product_name, quantity, buying_price.")
+
+        rows = []
+        for row_number, values_row in enumerate(values[1:], start=2):
+            if not any(value not in (None, "") for value in values_row):
+                continue
+            rows.append({
+                "row_number": row_number,
+                "product": str(values_row[columns["product"]] or "").strip(),
+                "quantity": values_row[columns["quantity"]],
+                "buying_price": values_row[columns["buying_price"]],
+                "supplier_name": str(values_row[columns["supplier_name"]] or "").strip() if columns["supplier_name"] is not None else "",
+            })
+        return rows
+
+    reader = PdfReader(BytesIO(payload))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    rows = []
+    for row_number, line in enumerate(text.splitlines(), start=1):
+        line = line.strip()
+        if not line or re.search(r"product.*quantity.*price", line, re.IGNORECASE):
+            continue
+        parts = [part.strip() for part in re.split(r"\s{2,}|\||;|,", line) if part.strip()]
+        if len(parts) < 3:
+            continue
+        rows.append({
+            "row_number": row_number,
+            "product": parts[0],
+            "quantity": parts[1],
+            "buying_price": parts[2],
+            "supplier_name": parts[3] if len(parts) > 3 else "",
+        })
+    if not rows:
+        raise ValueError("PDF haikutambulika. Tumia safu: Product | Quantity | Buying Price | Supplier.")
+    return rows
+
+
 @app.context_processor
 def inject_globals():
     return {
@@ -328,6 +454,8 @@ def inject_globals():
         "subscription": g.get("subscription"),
         "payment_methods": PAYMENT_METHODS,
         "plan_prices": PLAN_PRICES,
+        "current_language": session.get("language", "sw"),
+        "supported_languages": SUPPORTED_LANGUAGES,
     }
 
 
@@ -738,6 +866,231 @@ def pos_checkout():
 # ------------------------------------------------------------------
 # Products (owner only)
 # ------------------------------------------------------------------
+@app.route("/customers", methods=["GET", "POST"])
+@owner_required
+def customers():
+    db = get_db()
+    shop_id = g.user["shop_id"]
+    selected_customer_id = request.args.get("customer_id", "")
+
+    if request.method == "POST":
+        action = request.form.get("action")
+
+        if action == "create_customer":
+            name = request.form.get("name", "").strip()
+            phone = request.form.get("phone", "").strip() or None
+            email = request.form.get("email", "").strip() or None
+            address = request.form.get("address", "").strip() or None
+
+            if not name:
+                flash("Customer name is required.", "danger")
+            else:
+                with db.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO customers (shop_id, name, phone, email, address)
+                           VALUES (%s, %s, %s, %s, %s)""",
+                        (shop_id, name, phone, email, address),
+                    )
+                flash(f"Customer '{name}' added.", "success")
+                return redirect(url_for("customers"))
+
+        elif action == "record_entry":
+            customer_id = request.form.get("customer_id")
+            entry_type = request.form.get("entry_type")
+            amount = parse_decimal(request.form.get("amount"))
+            note = request.form.get("note", "").strip()
+            reference = request.form.get("reference", "").strip() or None
+
+            if not customer_id or entry_type not in {"credit", "payment", "adjustment"} or amount <= 0:
+                flash("Select a customer, choose a valid entry type, and enter an amount greater than zero.", "danger")
+            else:
+                with db.cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM customers WHERE id = %s AND shop_id = %s",
+                        (customer_id, shop_id),
+                    )
+                    customer = cur.fetchone()
+                    if customer is None:
+                        flash("Customer not found.", "danger")
+                    else:
+                        cur.execute(
+                            """SELECT COALESCE(SUM(CASE WHEN entry_type = 'payment' THEN -amount
+                                                          ELSE amount END), 0) AS balance
+                               FROM customer_ledger
+                               WHERE customer_id = %s AND shop_id = %s""",
+                            (customer_id, shop_id),
+                        )
+                        balance = cur.fetchone()["balance"]
+
+                        if entry_type == "payment" and balance <= 0:
+                            flash("Deni la mteja limekwisha. Huwezi kurekodi malipo mengine; pakua taarifa ya PDF.", "info")
+                        elif entry_type == "payment" and amount > balance:
+                            flash(f"Malipo haya yanazidi deni lililopo la {float(balance):,.0f} TSh.", "danger")
+                        else:
+                            cur.execute(
+                                """INSERT INTO customer_ledger
+                                   (shop_id, customer_id, user_id, entry_type, amount, note, reference)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                                (shop_id, customer_id, g.user["id"], entry_type, amount, note or None, reference),
+                            )
+                            flash("Daftari la mteja limesasishwa.", "success")
+                            return redirect(url_for("customers"))
+
+    with db.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.id, c.name, c.phone, c.email, c.address,
+                   COALESCE(SUM(CASE WHEN cl.entry_type = 'payment' THEN -cl.amount
+                                     WHEN cl.entry_type = 'adjustment' THEN cl.amount
+                                     ELSE cl.amount END), 0) AS balance
+            FROM customers c
+            LEFT JOIN customer_ledger cl ON cl.customer_id = c.id AND cl.shop_id = c.shop_id
+            WHERE c.shop_id = %s
+            GROUP BY c.id, c.name, c.phone, c.email, c.address
+            ORDER BY c.name ASC
+            """,
+            (shop_id,),
+        )
+        customer_list = cur.fetchall()
+
+        cur.execute(
+            """SELECT cl.id, c.name AS customer_name, cl.entry_type, cl.amount, cl.note, cl.reference, cl.created_at
+               FROM customer_ledger cl
+               JOIN customers c ON c.id = cl.customer_id
+               WHERE cl.shop_id = %s
+               ORDER BY cl.created_at DESC LIMIT 20""",
+            (shop_id,),
+        )
+        recent_ledger = cur.fetchall()
+
+    return render_template(
+        "customers.html",
+        customers=customer_list,
+        recent_ledger=recent_ledger,
+        selected_customer_id=selected_customer_id,
+    )
+
+
+@app.route("/customers/<customer_id>/history")
+@owner_required
+def customer_history(customer_id):
+    db = get_db()
+    shop_id = g.user["shop_id"]
+
+    with db.cursor() as cur:
+        cur.execute(
+            """SELECT c.id, c.name, c.phone, c.email, c.address,
+                      COALESCE(SUM(CASE WHEN cl.entry_type = 'payment' THEN -cl.amount
+                                        WHEN cl.entry_type = 'adjustment' THEN cl.amount
+                                        ELSE cl.amount END), 0) AS balance
+               FROM customers c
+               LEFT JOIN customer_ledger cl ON cl.customer_id = c.id AND cl.shop_id = %s
+               WHERE c.id = %s AND c.shop_id = %s
+               GROUP BY c.id, c.name, c.phone, c.email, c.address""",
+            (shop_id, customer_id, shop_id),
+        )
+        customer = cur.fetchone()
+        if customer is None:
+            abort(404)
+
+        cur.execute(
+            """SELECT entry_type, amount, note, reference, created_at
+               FROM customer_ledger
+               WHERE customer_id = %s AND shop_id = %s
+               ORDER BY created_at DESC""",
+            (customer_id, shop_id),
+        )
+        entries = cur.fetchall()
+
+    return render_template("customer_history.html", customer=customer, entries=entries)
+
+
+@app.route("/customers/<customer_id>/statement.pdf")
+@owner_required
+def customer_statement_pdf(customer_id):
+    db = get_db()
+    shop_id = g.user["shop_id"]
+
+    with db.cursor() as cur:
+        cur.execute(
+            """SELECT c.id, c.name, c.phone, c.email, c.address,
+                      COALESCE(SUM(CASE WHEN cl.entry_type = 'payment' THEN -cl.amount
+                                        WHEN cl.entry_type = 'adjustment' THEN cl.amount
+                                        ELSE cl.amount END), 0) AS balance
+               FROM customers c
+               LEFT JOIN customer_ledger cl ON cl.customer_id = c.id AND cl.shop_id = %s
+               WHERE c.id = %s AND c.shop_id = %s
+               GROUP BY c.id, c.name, c.phone, c.email, c.address""",
+            (shop_id, customer_id, shop_id),
+        )
+        customer = cur.fetchone()
+        if customer is None:
+            abort(404)
+
+        cur.execute(
+            """SELECT entry_type, amount, note, reference, created_at
+               FROM customer_ledger
+               WHERE customer_id = %s AND shop_id = %s
+               ORDER BY created_at ASC""",
+            (customer_id, shop_id),
+        )
+        entries = cur.fetchall()
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    pdf.setTitle(f"Customer Statement - {customer['name']}")
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(50, 760, "Hardware Shop POS - Customer Statement")
+    pdf.setFont("Helvetica", 11)
+    pdf.drawString(50, 740, f"Customer: {customer['name']}")
+    pdf.drawString(50, 725, f"Phone: {customer['phone'] or 'N/A'}")
+    pdf.drawString(50, 710, f"Email: {customer['email'] or 'N/A'}")
+    pdf.drawString(50, 695, f"Address: {customer['address'] or 'N/A'}")
+    pdf.drawString(50, 680, f"Current balance: {float(customer['balance']):,.0f} TSh")
+
+    y = 650
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(50, y, "Date")
+    pdf.drawString(140, y, "Type")
+    pdf.drawString(240, y, "Amount")
+    pdf.drawString(335, y, "Reference")
+    pdf.drawString(470, y, "Note")
+    y -= 18
+
+    pdf.setFont("Helvetica", 9)
+    for entry in entries:
+        if y < 80:
+            pdf.showPage()
+            y = 760
+            pdf.setFont("Helvetica-Bold", 10)
+            pdf.drawString(50, y, "Date")
+            pdf.drawString(140, y, "Type")
+            pdf.drawString(240, y, "Amount")
+            pdf.drawString(335, y, "Reference")
+            pdf.drawString(470, y, "Note")
+            y -= 18
+            pdf.setFont("Helvetica", 9)
+
+        date_text = entry["created_at"].strftime("%d %b %Y") if entry["created_at"] else "-"
+        amount_text = f"{float(entry['amount']):,.0f}"
+        pdf.drawString(50, y, date_text)
+        pdf.drawString(140, y, (entry["entry_type"] or "").title())
+        pdf.drawString(240, y, amount_text)
+        pdf.drawString(335, y, (entry["reference"] or "-")[:24])
+        pdf.drawString(470, y, (entry["note"] or "-")[:30])
+        y -= 16
+
+    pdf.save()
+    pdf_data = buffer.getvalue()
+    buffer.close()
+
+    return Response(
+        pdf_data,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={customer['name'].replace(' ', '_').lower()}_statement.pdf"},
+    )
+
+
 @app.route("/products")
 @owner_required
 def products():
@@ -846,6 +1199,162 @@ def product_edit(product_id):
 # ------------------------------------------------------------------
 # Inventory / Purchases (owner only)
 # ------------------------------------------------------------------
+def get_stock_report_rows():
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            """SELECT name, sku, unit, stock_quantity, minimum_stock, buying_price, selling_price
+               FROM products WHERE shop_id = %s ORDER BY name ASC""",
+            (g.user["shop_id"],),
+        )
+        return cur.fetchall()
+
+
+@app.route("/inventory/stock.xlsx")
+@owner_required
+def inventory_stock_excel():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Stock Report"
+    sheet.append(["Product", "SKU", "Unit", "Current Stock", "Minimum Stock", "Buying Price", "Selling Price"])
+    for row in get_stock_report_rows():
+        sheet.append([
+            row["name"], row["sku"] or "", row["unit"], row["stock_quantity"],
+            row["minimum_stock"], row["buying_price"], row["selling_price"],
+        ])
+    sheet.freeze_panes = "A2"
+    for column in sheet.columns:
+        sheet.column_dimensions[column[0].column_letter].width = max(14, min(28, max(len(str(cell.value or "")) for cell in column) + 2))
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return Response(
+        output.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=stock_report.xlsx"},
+    )
+
+
+@app.route("/inventory/stock.pdf")
+@owner_required
+def inventory_stock_pdf():
+    rows = get_stock_report_rows()
+    output = BytesIO()
+    pdf = canvas.Canvas(output, pagesize=letter)
+    pdf.setTitle("Stock Report")
+
+    def draw_header():
+        pdf.setFont("Helvetica-Bold", 16)
+        pdf.drawString(40, 760, "Hardware Shop POS - Stock Report")
+        pdf.setFont("Helvetica-Bold", 9)
+        pdf.drawString(40, 735, "Product")
+        pdf.drawString(190, 735, "SKU")
+        pdf.drawString(270, 735, "Unit")
+        pdf.drawString(315, 735, "Stock")
+        pdf.drawString(365, 735, "Minimum")
+        pdf.drawString(435, 735, "Buying")
+        pdf.drawString(500, 735, "Selling")
+
+    draw_header()
+    y = 718
+    pdf.setFont("Helvetica", 8)
+    for row in rows:
+        if y < 55:
+            pdf.showPage()
+            draw_header()
+            y = 718
+            pdf.setFont("Helvetica", 8)
+        pdf.drawString(40, y, str(row["name"])[:24])
+        pdf.drawString(190, y, str(row["sku"] or "-")[:12])
+        pdf.drawString(270, y, str(row["unit"] or "-")[:8])
+        pdf.drawRightString(350, y, f"{float(row['stock_quantity']):,.2f}")
+        pdf.drawRightString(420, y, f"{float(row['minimum_stock']):,.2f}")
+        pdf.drawRightString(485, y, f"{float(row['buying_price']):,.0f}")
+        pdf.drawRightString(555, y, f"{float(row['selling_price']):,.0f}")
+        y -= 16
+    pdf.save()
+    output.seek(0)
+    return Response(
+        output.getvalue(),
+        mimetype="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=stock_report.pdf"},
+    )
+
+
+@app.route("/inventory/import", methods=["POST"])
+@owner_required
+def inventory_import():
+    upload = request.files.get("stock_file")
+    if upload is None or not upload.filename:
+        flash("Chagua faili la Excel au PDF la kuingiza.", "danger")
+        return redirect(url_for("inventory"))
+
+    try:
+        imported_rows = parse_stock_import(upload)
+    except (ValueError, OSError) as error:
+        flash(str(error), "danger")
+        return redirect(url_for("inventory"))
+
+    db = get_db()
+    shop_id = g.user["shop_id"]
+    with db.cursor() as cur:
+        cur.execute("SELECT id, name, sku FROM products WHERE shop_id = %s", (shop_id,))
+        products_by_key = {}
+        for product in cur.fetchall():
+            products_by_key[product["name"].strip().lower()] = product
+            if product["sku"]:
+                products_by_key[product["sku"].strip().lower()] = product
+
+        validated_rows = []
+        errors = []
+        for row in imported_rows:
+            product_key = row["product"].lower()
+            product = products_by_key.get(product_key)
+            quantity = parse_decimal(row["quantity"])
+            buying_price = parse_decimal(row["buying_price"])
+            if product is None:
+                errors.append(f"Mstari {row['row_number']}: bidhaa '{row['product']}' haipo.")
+            elif quantity <= 0 or buying_price < 0:
+                errors.append(f"Mstari {row['row_number']}: quantity lazima izidi 0 na buying price isiwe chini ya 0.")
+            else:
+                validated_rows.append({**row, "product": product, "quantity": quantity, "buying_price": buying_price})
+
+        if errors:
+            flash("Import haijafanyika: " + " ".join(errors[:3]), "danger")
+            return redirect(url_for("inventory"))
+
+        for row in validated_rows:
+            total_amount = row["quantity"] * row["buying_price"]
+            cur.execute(
+                """INSERT INTO purchases (shop_id, user_id, supplier_name, total_amount)
+                   VALUES (%s, %s, %s, %s) RETURNING id""",
+                (shop_id, g.user["id"], row["supplier_name"] or None, total_amount),
+            )
+            purchase = cur.fetchone()
+            cur.execute(
+                """INSERT INTO purchase_items
+                   (purchase_id, product_id, quantity, buying_price, subtotal)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                (purchase["id"], row["product"]["id"], row["quantity"], row["buying_price"], total_amount),
+            )
+            cur.execute(
+                """UPDATE products SET stock_quantity = stock_quantity + %s,
+                   buying_price = %s WHERE id = %s AND shop_id = %s""",
+                (row["quantity"], row["buying_price"], row["product"]["id"], shop_id),
+            )
+            cur.execute(
+                """INSERT INTO stock_movements
+                   (shop_id, product_id, user_id, movement_type, quantity, reference_id)
+                   VALUES (%s, %s, %s, 'PURCHASE', %s, %s)""",
+                (shop_id, row["product"]["id"], g.user["id"], row["quantity"], purchase["id"]),
+            )
+
+    log_activity("PURCHASE_IMPORTED", f"Imported {len(validated_rows)} stock rows from {secure_filename(upload.filename)}")
+    flash(f"Import imefanikiwa: mistari {len(validated_rows)} imeongezwa kwenye stoo.", "success")
+    return redirect(url_for("inventory"))
+
+
 @app.route("/inventory", methods=["GET", "POST"])
 @owner_required
 def inventory():
@@ -1011,12 +1520,7 @@ def expenses():
 # ------------------------------------------------------------------
 # Reports (owner only)
 # ------------------------------------------------------------------
-@app.route("/reports")
-@owner_required
-def reports():
-    period = request.args.get("period", "daily")
-    shop_id = g.user["shop_id"]
-
+def get_report_data(period):
     today = date.today()
     if period == "weekly":
         start = today - timedelta(days=today.weekday())
@@ -1034,45 +1538,120 @@ def reports():
         cur.execute(
             """SELECT COUNT(*) AS count, COALESCE(SUM(total_amount), 0) AS total
                FROM sales WHERE shop_id = %s AND created_at::date >= %s""",
-            (shop_id, start),
+            (g.user["shop_id"], start),
         )
         sales_summary = cur.fetchone()
-
         cur.execute(
             """SELECT COALESCE(SUM((si.unit_price - si.buying_price) * si.quantity), 0) AS gross_profit
                FROM sale_items si JOIN sales s ON s.id = si.sale_id
                WHERE s.shop_id = %s AND s.created_at::date >= %s""",
-            (shop_id, start),
+            (g.user["shop_id"], start),
         )
         gross_profit = float(cur.fetchone()["gross_profit"] or 0)
-
         cur.execute(
             """SELECT category, COALESCE(SUM(amount), 0) AS total FROM expenses
                WHERE shop_id = %s AND created_at::date >= %s
                GROUP BY category ORDER BY total DESC""",
-            (shop_id, start),
+            (g.user["shop_id"], start),
         )
         expenses_by_category = cur.fetchall()
-        total_expenses = float(sum(float(e["total"]) for e in expenses_by_category))
-
         cur.execute(
             """SELECT s.created_at::date AS day, COUNT(*) AS count, SUM(s.total_amount) AS total
                FROM sales s WHERE s.shop_id = %s AND s.created_at::date >= %s
                GROUP BY day ORDER BY day ASC""",
-            (shop_id, start),
+            (g.user["shop_id"], start),
         )
         sales_by_day = cur.fetchall()
 
-    return render_template(
-        "reports.html",
-        period=period,
-        label=label,
-        sales_summary=sales_summary,
-        gross_profit=gross_profit,
-        total_expenses=total_expenses,
-        estimated_profit=gross_profit - total_expenses,
-        expenses_by_category=expenses_by_category,
-        sales_by_day=sales_by_day,
+    total_expenses = float(sum(float(item["total"]) for item in expenses_by_category))
+    return {
+        "period": period,
+        "label": label,
+        "sales_summary": sales_summary,
+        "gross_profit": gross_profit,
+        "total_expenses": total_expenses,
+        "estimated_profit": gross_profit - total_expenses,
+        "expenses_by_category": expenses_by_category,
+        "sales_by_day": sales_by_day,
+    }
+
+
+@app.route("/reports")
+@owner_required
+def reports():
+    return render_template("reports.html", **get_report_data(request.args.get("period", "daily")))
+
+
+@app.route("/reports/export.xlsx")
+@owner_required
+def reports_export_excel():
+    data = get_report_data(request.args.get("period", "daily"))
+    workbook = Workbook()
+    summary = workbook.active
+    summary.title = "Summary"
+    summary.append(["Report", data["label"]])
+    summary.append(["Transactions", data["sales_summary"]["count"]])
+    summary.append(["Total Sales (TSh)", float(data["sales_summary"]["total"])])
+    summary.append(["Gross Profit (TSh)", data["gross_profit"]])
+    summary.append(["Expenses (TSh)", data["total_expenses"]])
+    summary.append(["Estimated Profit (TSh)", data["estimated_profit"]])
+    daily = workbook.create_sheet("Sales by Day")
+    daily.append(["Date", "Transactions", "Total (TSh)"])
+    for row in data["sales_by_day"]:
+        daily.append([row["day"], row["count"], float(row["total"])])
+    expenses = workbook.create_sheet("Expenses by Category")
+    expenses.append(["Category", "Total (TSh)"])
+    for row in data["expenses_by_category"]:
+        expenses.append([row["category"], float(row["total"])])
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return Response(
+        output.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=reports_{data['period']}.xlsx"},
+    )
+
+
+@app.route("/reports/export.pdf")
+@owner_required
+def reports_export_pdf():
+    data = get_report_data(request.args.get("period", "daily"))
+    output = BytesIO()
+    pdf = canvas.Canvas(output, pagesize=letter)
+    pdf.setTitle(f"Sales Report - {data['label']}")
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(45, 760, f"Hardware Shop POS - Report ({data['label']})")
+    pdf.setFont("Helvetica", 11)
+    metrics = [
+        ("Transactions", data["sales_summary"]["count"]),
+        ("Total Sales", f"{float(data['sales_summary']['total']):,.0f} TSh"),
+        ("Gross Profit", f"{data['gross_profit']:,.0f} TSh"),
+        ("Expenses", f"{data['total_expenses']:,.0f} TSh"),
+        ("Estimated Profit", f"{data['estimated_profit']:,.0f} TSh"),
+    ]
+    y = 725
+    for label, value in metrics:
+        pdf.drawString(55, y, f"{label}: {value}")
+        y -= 18
+    y -= 10
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(55, y, "Sales by Day")
+    y -= 18
+    pdf.setFont("Helvetica", 9)
+    for row in data["sales_by_day"]:
+        if y < 55:
+            pdf.showPage()
+            y = 760
+            pdf.setFont("Helvetica", 9)
+        pdf.drawString(55, y, f"{row['day'].strftime('%d %b %Y')}: {row['count']} transactions, {float(row['total']):,.0f} TSh")
+        y -= 15
+    pdf.save()
+    output.seek(0)
+    return Response(
+        output.getvalue(),
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=reports_{data['period']}.pdf"},
     )
 
 
