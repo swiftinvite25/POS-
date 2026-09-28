@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 blinker==1.9.0
 certifi==2026.7.22
 chardet==7.6.0
@@ -22,4 +23,16 @@ reportlab==4.2.5
 requests==2.34.2
 tzdata==2026.4
 urllib3==2.8.0
+=======
+﻿blinker==1.9.0
+click==8.5.0
+Flask==3.1.3
+gunicorn==26.2.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+psycopg-binary==3.3.6
+psycopg2-binary==2.9.13
+python-dotenv==1.2.3
+>>>>>>> 48e8bbddda89908b1db3455dfba7017a6f9f1392
 Werkzeug==3.1.8
