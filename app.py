@@ -1594,7 +1594,8 @@ def reports_export_excel():
     summary.append(["Total Sales (TSh)", float(data["sales_summary"]["total"])])
     summary.append(["Gross Profit (TSh)", data["gross_profit"]])
     summary.append(["Expenses (TSh)", data["total_expenses"]])
-    summary.append(["Estimated Profit (TSh)", data["estimated_profit"]])
+    result_label = "Profit (TSh)" if data["estimated_profit"] >= 0 else "Loss (TSh)"
+    summary.append([result_label, data["estimated_profit"]])
     daily = workbook.create_sheet("Sales by Day")
     daily.append(["Date", "Transactions", "Total (TSh)"])
     for row in data["sales_by_day"]:
@@ -1628,7 +1629,7 @@ def reports_export_pdf():
         ("Total Sales", f"{float(data['sales_summary']['total']):,.0f} TSh"),
         ("Gross Profit", f"{data['gross_profit']:,.0f} TSh"),
         ("Expenses", f"{data['total_expenses']:,.0f} TSh"),
-        ("Estimated Profit", f"{data['estimated_profit']:,.0f} TSh"),
+        ("Profit" if data["estimated_profit"] >= 0 else "Loss", f"{data['estimated_profit']:,.0f} TSh"),
     ]
     y = 725
     for label, value in metrics:

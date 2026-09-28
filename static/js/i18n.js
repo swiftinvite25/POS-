@@ -110,6 +110,8 @@
         "Total Expenses": "Jumla ya matumizi",
         "Sales Gross Profit": "Faida ghafi ya mauzo",
         "Estimated Profit": "Faida inayokadiriwa",
+        "Profit": "Faida",
+        "Loss": "Hasara",
         "transactions": "miamala",
         "Sales by Day": "Mauzo kwa siku",
         "Transactions": "Miamala",
